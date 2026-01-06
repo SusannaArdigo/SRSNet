@@ -3,8 +3,7 @@ import torch.nn as nn
 import math
 
 from ..layers.decomp import DECOMP
-# from ..layers.network import Network
-from ..layers.network_origin import Network
+from ..layers.network import Network
 
 # from layers.network_mlp import NetworkMLP # For ablation study with MLP-only stream
 # from layers.network_cnn import NetworkCNN # For ablation study with CNN-only stream
@@ -32,12 +31,11 @@ class xPatchModel(nn.Module):
         # Moving Average
         self.ma_type = configs.ma_type
         alpha = configs.alpha  # smoothing factor for EMA (Exponential Moving Average)
-        beta = configs.beta  # smoothing factor for DEMA (Double Exponential Moving Average)
+        beta = (
+            configs.beta
+        )  # smoothing factor for DEMA (Double Exponential Moving Average)
 
         self.decomp = DECOMP(self.ma_type, alpha, beta)
-        # self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, configs.srs_dropout,
-        #                    configs.srs_hidden_size, configs.srs_alpha, configs.srs_pos)
-
         self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
@@ -47,9 +45,11 @@ class xPatchModel(nn.Module):
 
         # Normalization
         if self.revin:
-            x = self.revin_layer(x, 'norm')
+            x = self.revin_layer(x, "norm")
 
-        if self.ma_type == 'reg':  # If no decomposition, directly pass the input to the network
+        if (
+            self.ma_type == "reg"
+        ):  # If no decomposition, directly pass the input to the network
             x = self.net(x, x)
             # x = self.net_mlp(x) # For ablation study with MLP-only stream
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
@@ -59,6 +59,6 @@ class xPatchModel(nn.Module):
 
         # Denormalization
         if self.revin:
-            x = self.revin_layer(x, 'denorm')
+            x = self.revin_layer(x, "denorm")
 
         return x

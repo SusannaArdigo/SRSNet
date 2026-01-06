@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from ts_benchmark.baselines.patchmlp.layers.Embed import Emb, SRSEmb
+from ts_benchmark.baselines.patchmlp.layers.Embed import Emb
+
+
 class moving_avg(nn.Module):
     """
     Moving average block to highlight the trend of time series
@@ -46,20 +48,15 @@ class PatchMLPModel(nn.Module):
         self.pred_len = configs.pred_len
         self.output_attention = configs.output_attention
         self.use_norm = configs.use_norm
-        self.dropout = configs.dropout
+
         self.decompsition = series_decomp(13)
-        if self.seq_len > 96:
-            patch_len = [48, 24, 12, 6]
-        else:
-            patch_len = [16, 8, 4, 2]
         # Embedding
-        # self.emb = SRSEmb(configs.d_model,self.seq_len,configs.srs_dropout,configs.srs_hidden_size,configs.srs_alpha,configs.srs_pos)
-        self.emb = Emb(configs.seq_len, configs.d_model,patch_len=patch_len)
+        self.emb = Emb(configs.seq_len, configs.d_model)
         self.seasonal_layers = nn.ModuleList(
-            [Encoder(configs.d_model, configs.enc_in,configs.dropout) for i in range(configs.e_layers)]
+            [Encoder(configs.d_model, configs.enc_in) for i in range(configs.e_layers)]
         )
         self.trend_layers = nn.ModuleList(
-            [Encoder(configs.d_model, configs.enc_in,configs.dropout) for i in range(configs.e_layers)]
+            [Encoder(configs.d_model, configs.enc_in) for i in range(configs.e_layers)]
         )
 
         self.projector = nn.Linear(configs.d_model, configs.pred_len, bias=True)
@@ -104,16 +101,16 @@ class PatchMLPModel(nn.Module):
 
 class Encoder(nn.Module):
 
-    def __init__(self, d_model, enc_in, dropout):
+    def __init__(self, d_model, enc_in):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
 
         self.ff1 = nn.Sequential(
-            nn.Linear(d_model, d_model), nn.GELU(), nn.Dropout(dropout)
+            nn.Linear(d_model, d_model), nn.GELU(), nn.Dropout(0.1)
         )
 
-        self.ff2 = nn.Sequential(nn.Linear(enc_in, enc_in), nn.GELU(), nn.Dropout(dropout))
+        self.ff2 = nn.Sequential(nn.Linear(enc_in, enc_in), nn.GELU(), nn.Dropout(0.1))
 
     def forward(self, x):
 
