@@ -1,0 +1,44 @@
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.data_source(126): Start loading 1 series in parallel
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.data_source(135): Data loading finished.
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.suites.global_storage(40): Data server starting...
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.suites.global_storage(41): Start sending data to the global storage.
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.suites.global_storage(46): Notifying all workers to sync data from the global storage.
+2026-05-16 19:38:53 [INFO] ts_benchmark.data.suites.global_storage(49): Data server started.
+2026-05-16 19:38:53 [INFO] ts_benchmark.models.model_loader(102): Trying to load model ts_benchmark.baselines.srs_paper.SRSNet_TASP_HypernetAF
+
+scheduling SRSNet_TASP_HypernetAF:   0%|          | 0/1 [00:00<?, ?it/s]2026-05-16 19:38:54 [WARNING] ts_benchmark.baselines.deep_forecasting_model_base(56): The model parameter horizon is deprecated. Please use pred_len.
+
+scheduling SRSNet_TASP_HypernetAF: 100%|██████████| 1/1 [00:54<00:00, 54.29s/it]
+scheduling SRSNet_TASP_HypernetAF: 100%|██████████| 1/1 [00:54<00:00, 54.29s/it]
+---------------------------------------------------------- SRSNet_TASP_HypernetAF
+Total trainable parameters: 609597
+Validation loss decreased (inf --> 0.345260).  Saving model ...
+Updating learning rate to 0.0001
+Validation loss decreased (0.345260 --> 0.341359).  Saving model ...
+Updating learning rate to 5e-05
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 2.5e-05
+Validation loss decreased (0.341359 --> 0.340249).  Saving model ...
+Updating learning rate to 1.25e-05
+Validation loss decreased (0.340249 --> 0.339684).  Saving model ...
+Updating learning rate to 6.25e-06
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 3.125e-06
+EarlyStopping counter: 2 out of 5
+Updating learning rate to 1.5625e-06
+Validation loss decreased (0.339684 --> 0.339601).  Saving model ...
+Updating learning rate to 7.8125e-07
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 3.90625e-07
+EarlyStopping counter: 2 out of 5
+Updating learning rate to 1.953125e-07
+EarlyStopping counter: 3 out of 5
+Updating learning rate to 9.765625e-08
+EarlyStopping counter: 4 out of 5
+Updating learning rate to 4.8828125e-08
+EarlyStopping counter: 5 out of 5
+
+collecting SRSNet_TASP_HypernetAF:   0%|          | 0/1 [00:00<?, ?it/s]
+collecting SRSNet_TASP_HypernetAF: 100%|██████████| 1/1 [00:00<00:00, 32768.00it/s]
+collecting SRSNet_TASP_HypernetAF: 100%|██████████| 1/1 [00:00<00:00, 8439.24it/s] 
+2026-05-16 19:39:48 [INFO] ts_benchmark.recording(103): loading log file /home/ubuntu/SRSNet/result/repro/selectivity-controls/selectivity_controls/selectivity_controls_ETTh1_H96_SRSNet_TASP_HypernetAF_s2024/SRSNet_TASP_HypernetAF.1778960388.8e9af4e1-bd59-4abd-bd87-4b870b430c55-5f6cc66cbf-nfkn8.17716.csv.tar.gz

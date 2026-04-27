@@ -1,0 +1,270 @@
+\appendix
+
+\section{Per-cell results on the full ETT grid (extensions)}
+\label{app:extensions-cells}
+
+Table~\ref{tab:ext-full-cells} reports the per-cell mean MSE and
+seed-level standard deviation ($5$ seeds) for the five
+single-axis variants in the extension study, on the full ETT
+grid ($4$ datasets $\times$ $4$ horizons $=$ $16$ cells).
+\textcolor{red}{\textbf{Red}}: best per row.
+\textcolor{blue}{\underline{Blue}}: 2nd best per row.
+
+\begin{table}[h]
+  \caption{Per-cell mean MSE $\pm$ seed-level standard deviation
+    ($5$ seeds) for the five single-axis variants on the full
+    ETT grid. \textcolor{red}{\textbf{Red}}: best per row.
+    \textcolor{blue}{\underline{Blue}}: 2nd best per row.}
+  \label{tab:ext-full-cells}
+  \begin{center}
+  \scriptsize
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{l|c|ccccc}
+    \toprule
+    Dataset & H & SRSNet & RandomSP & RandSP$+$NoSh & TASP & HypernetAF \\
+    \midrule
+    ETTh1 & 96  & 0.4362{\scriptsize $\pm$0.0004} & \textcolor{blue}{\underline{0.4360}}{\scriptsize $\pm$0.0004} & 0.4361{\scriptsize $\pm$0.0002} & 0.4368{\scriptsize $\pm$0.0005} & \textcolor{red}{\textbf{0.4360}}{\scriptsize $\pm$0.0004} \\
+    ETTh1 & 192 & 0.4839{\scriptsize $\pm$0.0026} & \textcolor{blue}{\underline{0.4821}}{\scriptsize $\pm$0.0004} & \textcolor{red}{\textbf{0.4818}}{\scriptsize $\pm$0.0006} & 0.4836{\scriptsize $\pm$0.0003} & 0.4879{\scriptsize $\pm$0.0045} \\
+    ETTh1 & 336 & \textcolor{blue}{\underline{0.5304}}{\scriptsize $\pm$0.0035} & 0.5332{\scriptsize $\pm$0.0050} & 0.5332{\scriptsize $\pm$0.0050} & 0.5340{\scriptsize $\pm$0.0066} & \textcolor{red}{\textbf{0.5303}}{\scriptsize $\pm$0.0026} \\
+    ETTh1 & 720 & 0.6606{\scriptsize $\pm$0.0026} & 0.6545{\scriptsize $\pm$0.0033} & \textcolor{blue}{\underline{0.6534}}{\scriptsize $\pm$0.0015} & \textcolor{red}{\textbf{0.6533}}{\scriptsize $\pm$0.0044} & 0.6622{\scriptsize $\pm$0.0020} \\
+    \midrule
+    ETTh2 & 96  & 0.2254{\scriptsize $\pm$0.0015} & 0.2195{\scriptsize $\pm$0.0014} & \textcolor{red}{\textbf{0.2173}}{\scriptsize $\pm$0.0002} & \textcolor{blue}{\underline{0.2191}}{\scriptsize $\pm$0.0032} & 0.2193{\scriptsize $\pm$0.0006} \\
+    ETTh2 & 192 & 0.2840{\scriptsize $\pm$0.0039} & 0.2779{\scriptsize $\pm$0.0024} & \textcolor{red}{\textbf{0.2756}}{\scriptsize $\pm$0.0021} & \textcolor{blue}{\underline{0.2767}}{\scriptsize $\pm$0.0032} & 0.2777{\scriptsize $\pm$0.0047} \\
+    ETTh2 & 336 & 0.3236{\scriptsize $\pm$0.0060} & 0.3162{\scriptsize $\pm$0.0021} & \textcolor{red}{\textbf{0.3129}}{\scriptsize $\pm$0.0002} & \textcolor{blue}{\underline{0.3154}}{\scriptsize $\pm$0.0023} & 0.3156{\scriptsize $\pm$0.0016} \\
+    ETTh2 & 720 & 0.4137{\scriptsize $\pm$0.0115} & 0.4150{\scriptsize $\pm$0.0071} & 0.4156{\scriptsize $\pm$0.0090} & \textcolor{red}{\textbf{0.4047}}{\scriptsize $\pm$0.0120} & \textcolor{blue}{\underline{0.4118}}{\scriptsize $\pm$0.0152} \\
+    \midrule
+    ETTm1 & 96  & \textcolor{red}{\textbf{0.3171}}{\scriptsize $\pm$0.0026} & 0.3209{\scriptsize $\pm$0.0004} & 0.3215{\scriptsize $\pm$0.0004} & 0.3203{\scriptsize $\pm$0.0017} & \textcolor{blue}{\underline{0.3193}}{\scriptsize $\pm$0.0007} \\
+    ETTm1 & 192 & \textcolor{red}{\textbf{0.3687}}{\scriptsize $\pm$0.0013} & 0.3770{\scriptsize $\pm$0.0005} & 0.3773{\scriptsize $\pm$0.0005} & 0.3765{\scriptsize $\pm$0.0016} & \textcolor{blue}{\underline{0.3739}}{\scriptsize $\pm$0.0014} \\
+    ETTm1 & 336 & \textcolor{red}{\textbf{0.4177}}{\scriptsize $\pm$0.0058} & 0.4271{\scriptsize $\pm$0.0010} & 0.4283{\scriptsize $\pm$0.0020} & 0.4259{\scriptsize $\pm$0.0029} & \textcolor{blue}{\underline{0.4227}}{\scriptsize $\pm$0.0025} \\
+    ETTm1 & 720 & \textcolor{red}{\textbf{0.5037}}{\scriptsize $\pm$0.0017} & 0.5082{\scriptsize $\pm$0.0043} & 0.5069{\scriptsize $\pm$0.0013} & 0.5056{\scriptsize $\pm$0.0046} & \textcolor{blue}{\underline{0.5045}}{\scriptsize $\pm$0.0059} \\
+    \midrule
+    ETTm2 & 96  & \textcolor{blue}{\underline{0.1482}}{\scriptsize $\pm$0.0008} & 0.1484{\scriptsize $\pm$0.0004} & 0.1486{\scriptsize $\pm$0.0004} & 0.1488{\scriptsize $\pm$0.0011} & \textcolor{red}{\textbf{0.1476}}{\scriptsize $\pm$0.0004} \\
+    ETTm2 & 192 & 0.1819{\scriptsize $\pm$0.0017} & \textcolor{blue}{\underline{0.1811}}{\scriptsize $\pm$0.0010} & 0.1813{\scriptsize $\pm$0.0007} & 0.1851{\scriptsize $\pm$0.0017} & \textcolor{red}{\textbf{0.1804}}{\scriptsize $\pm$0.0008} \\
+    ETTm2 & 336 & 0.2168{\scriptsize $\pm$0.0026} & \textcolor{blue}{\underline{0.2146}}{\scriptsize $\pm$0.0003} & \textcolor{red}{\textbf{0.2146}}{\scriptsize $\pm$0.0005} & 0.2181{\scriptsize $\pm$0.0029} & 0.2161{\scriptsize $\pm$0.0023} \\
+    ETTm2 & 720 & 0.2739{\scriptsize $\pm$0.0023} & \textcolor{red}{\textbf{0.2706}}{\scriptsize $\pm$0.0014} & \textcolor{blue}{\underline{0.2714}}{\scriptsize $\pm$0.0033} & 0.2752{\scriptsize $\pm$0.0043} & 0.2718{\scriptsize $\pm$0.0037} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Small-grid 9-variant study (with combos)}
+\label{app:small-grid-combos}
+
+Table~\ref{tab:smallgrid-cells} reports the per-cell mean MSE
+$\pm$ seed-level standard deviation for the small-grid pilot:
+$2$ datasets (ETTh1, ETTm2) $\times$ $2$ horizons ($96, 720$)
+$\times$ $5$ seeds with $9$ variants (the same five single-axis
+variants of the main study, plus four multi-axis combinations:
+RandomSP\,$\times$\,HypernetAF, TASP\,$\times$\,HypernetAF, and
+their identity-shuffle counterparts). The combinations did not show a
+clearer pattern than the single-axis variants, which is why we dropped
+them from the main full-grid study.
+
+\begin{table}[h]
+  \caption{Per-cell mean MSE $\pm$ seed std ($5$ seeds) for the
+    nine variants of the small-grid pilot. Abbreviations:
+    Rand $=$ RandomSP; RandNS $=$ RandomSPNoShuffle;
+    Hyp $=$ HypernetAF; R$+$H $=$ RandomSP\,$+$\,HypernetAF;
+    R$+$NS$+$H $=$ RandomSP\,$+$\,NoShuffle\,$+$\,HypernetAF;
+    T$+$H $=$ TASP\,$+$\,HypernetAF;
+    T$+$NS$+$H $=$ TASP\,$+$\,NoShuffle\,$+$\,HypernetAF.
+    \textcolor{red}{\textbf{Red}}: best per row.
+    \textcolor{blue}{\underline{Blue}}: 2nd best per row.}
+  \label{tab:smallgrid-cells}
+  \begin{center}
+  \tiny
+  \setlength{\tabcolsep}{1.5pt}
+  \begin{tabular}{ll|ccccccccc}
+    \toprule
+    Ds & H & SRSNet & Rand & RandNS & TASP & Hyp & R$+$H & T$+$H & R$+$NS$+$H & T$+$NS$+$H \\
+    \midrule
+    ETTh1 & 96  & \textcolor{red}{\textbf{0.4360}}{\scriptsize $\pm$.0006} & \textcolor{blue}{\underline{0.4361}}{\scriptsize $\pm$.0004} & 0.4361{\scriptsize $\pm$.0002} & 0.4365{\scriptsize $\pm$.0005} & 0.4361{\scriptsize $\pm$.0004} & 0.4361{\scriptsize $\pm$.0001} & 0.4371{\scriptsize $\pm$.0006} & 0.4363{\scriptsize $\pm$.0001} & 0.4365{\scriptsize $\pm$.0004} \\
+    ETTh1 & 720 & 0.6604{\scriptsize $\pm$.0028} & 0.6545{\scriptsize $\pm$.0034} & \textcolor{red}{\textbf{0.6534}}{\scriptsize $\pm$.0015} & \textcolor{blue}{\underline{0.6538}}{\scriptsize $\pm$.0039} & 0.6621{\scriptsize $\pm$.0019} & 0.6546{\scriptsize $\pm$.0036} & 0.6547{\scriptsize $\pm$.0058} & 0.6545{\scriptsize $\pm$.0031} & 0.6563{\scriptsize $\pm$.0009} \\
+    ETTm2 & 96  & \textcolor{blue}{\underline{0.1481}}{\scriptsize $\pm$.0011} & 0.1482{\scriptsize $\pm$.0009} & 0.1486{\scriptsize $\pm$.0004} & 0.1491{\scriptsize $\pm$.0015} & \textcolor{red}{\textbf{0.1477}}{\scriptsize $\pm$.0002} & 0.1481{\scriptsize $\pm$.0002} & 0.1483{\scriptsize $\pm$.0003} & 0.1484{\scriptsize $\pm$.0001} & 0.1485{\scriptsize $\pm$.0002} \\
+    ETTm2 & 720 & 0.2708{\scriptsize $\pm$.0060} & 0.2706{\scriptsize $\pm$.0014} & 0.2714{\scriptsize $\pm$.0033} & 0.2739{\scriptsize $\pm$.0034} & \textcolor{red}{\textbf{0.2697}}{\scriptsize $\pm$.0025} & 0.2707{\scriptsize $\pm$.0035} & 0.2717{\scriptsize $\pm$.0015} & \textcolor{blue}{\underline{0.2697}}{\scriptsize $\pm$.0026} & 0.2721{\scriptsize $\pm$.0021} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Tab.~\ref{tab:tab2} per-cell with MAE}
+\label{app:tab2-mae}
+
+Table~\ref{tab:tab2-mae} expands the headline comparison
+Table~\ref{tab:tab2} of the main text with MAE values and shows
+the full per-cell numbers (16 cells per model).
+
+\begin{table}[h]
+  \caption{Per-cell MSE and MAE on the four ETT datasets and
+    four horizons, for SRSNet and the baselines we could
+    re-run on Hivenet. Dash indicates empty or missing released scripts. \textcolor{red}{\textbf{Red}}: best per row per
+    metric. \textcolor{blue}{\underline{Blue}}: 2nd best per
+    row per metric.}
+  \label{tab:tab2-mae}
+  \begin{center}
+  \tiny
+  \setlength{\tabcolsep}{1.5pt}
+  \begin{tabular}{ll|cc|cc|cc|cc|cc|cc|cc}
+    \toprule
+    Ds & H & \multicolumn{2}{c|}{PatchTST} & \multicolumn{2}{c|}{DLinear} & \multicolumn{2}{c|}{iTransf.} & \multicolumn{2}{c|}{TimesNet} & \multicolumn{2}{c|}{TimeMixer} & \multicolumn{2}{c|}{PatchMLP} & \multicolumn{2}{c}{SRSNet} \\
+       &   & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE \\
+    \midrule
+    ETTh1 & 96  & \textcolor{red}{\textbf{0.419}} & \textcolor{blue}{\underline{0.446}} & -- & -- & -- & -- & -- & -- & -- & -- & 0.441 & \textcolor{red}{\textbf{0.446}} & \textcolor{blue}{\underline{0.437}} & 0.454 \\
+    ETTh1 & 192 & \textcolor{red}{\textbf{0.461}} & \textcolor{red}{\textbf{0.479}} & -- & -- & -- & -- & -- & -- & -- & -- & 0.492 & 0.499 & \textcolor{blue}{\underline{0.487}} & \textcolor{blue}{\underline{0.490}} \\
+    ETTh1 & 336 & \textcolor{blue}{\underline{0.534}} & \textcolor{blue}{\underline{0.526}} & -- & -- & -- & -- & -- & -- & -- & -- & 0.569 & 0.550 & \textcolor{red}{\textbf{0.529}} & \textcolor{red}{\textbf{0.517}} \\
+    ETTh1 & 720 & \textcolor{blue}{\underline{0.669}} & \textcolor{blue}{\underline{0.617}} & -- & -- & -- & -- & -- & -- & -- & -- & 0.700 & 0.636 & \textcolor{red}{\textbf{0.658}} & \textcolor{red}{\textbf{0.603}} \\
+    \midrule
+    ETTh2 & 96  & 0.240 & 0.340 & \textcolor{red}{\textbf{0.216}} & \textcolor{red}{\textbf{0.315}} & 0.245 & 0.332 & 0.259 & 0.343 & 0.248 & 0.345 & -- & -- & \textcolor{blue}{\underline{0.224}} & \textcolor{blue}{\underline{0.319}} \\
+    ETTh2 & 192 & \textcolor{blue}{\underline{0.277}} & \textcolor{blue}{\underline{0.358}} & 0.277 & 0.365 & 0.287 & 0.370 & 0.311 & 0.377 & \textcolor{red}{\textbf{0.276}} & 0.359 & -- & -- & \textcolor{red}{\textbf{0.276}} & \textcolor{red}{\textbf{0.358}} \\
+    ETTh2 & 336 & \textcolor{blue}{\underline{0.318}} & \textcolor{red}{\textbf{0.387}} & \textcolor{red}{\textbf{0.312}} & 0.394 & 0.322 & \textcolor{blue}{\underline{0.390}} & 0.387 & 0.424 & 0.338 & 0.403 & -- & -- & 0.327 & 0.392 \\
+    ETTh2 & 720 & \textcolor{red}{\textbf{0.388}} & \textcolor{red}{\textbf{0.428}} & 0.448 & 0.481 & 0.426 & 0.444 & \textcolor{blue}{\underline{0.405}} & \textcolor{blue}{\underline{0.437}} & 0.415 & 0.441 & -- & -- & 0.429 & 0.448 \\
+    \midrule
+    ETTm1 & 96  & \textcolor{blue}{\underline{0.323}} & 0.380 & 0.337 & 0.373 & 0.343 & 0.387 & 0.454 & 0.451 & 0.327 & \textcolor{blue}{\underline{0.372}} & -- & -- & \textcolor{red}{\textbf{0.320}} & \textcolor{red}{\textbf{0.371}} \\
+    ETTm1 & 192 & \textcolor{blue}{\underline{0.379}} & 0.416 & 0.390 & \textcolor{red}{\textbf{0.405}} & 0.401 & 0.425 & 0.493 & 0.471 & 0.390 & 0.412 & -- & -- & \textcolor{red}{\textbf{0.371}} & \textcolor{blue}{\underline{0.406}} \\
+    ETTm1 & 336 & \textcolor{blue}{\underline{0.420}} & 0.442 & 0.424 & \textcolor{red}{\textbf{0.433}} & 0.446 & 0.450 & 0.551 & 0.508 & 0.437 & \textcolor{blue}{\underline{0.442}} & -- & -- & \textcolor{red}{\textbf{0.419}} & 0.444 \\
+    ETTm1 & 720 & \textcolor{blue}{\underline{0.477}} & 0.483 & \textcolor{red}{\textbf{0.473}} & \textcolor{red}{\textbf{0.471}} & 0.490 & 0.488 & 0.611 & 0.545 & 0.484 & \textcolor{blue}{\underline{0.479}} & -- & -- & 0.505 & 0.484 \\
+    \midrule
+    ETTm2 & 96  & \textcolor{red}{\textbf{0.147}} & \textcolor{blue}{\underline{0.255}} & 0.149 & 0.255 & 0.162 & 0.269 & 0.169 & 0.269 & 0.151 & 0.256 & 0.154 & 0.257 & \textcolor{blue}{\underline{0.149}} & \textcolor{red}{\textbf{0.253}} \\
+    ETTm2 & 192 & 0.187 & 0.290 & \textcolor{blue}{\underline{0.184}} & \textcolor{red}{\textbf{0.284}} & 0.205 & 0.303 & 0.204 & 0.298 & 0.187 & 0.288 & 0.191 & 0.291 & \textcolor{red}{\textbf{0.183}} & \textcolor{blue}{\underline{0.285}} \\
+    ETTm2 & 336 & \textcolor{red}{\textbf{0.214}} & \textcolor{red}{\textbf{0.306}} & 0.222 & 0.314 & 0.231 & 0.321 & 0.254 & 0.331 & 0.228 & 0.318 & 0.238 & 0.328 & \textcolor{blue}{\underline{0.221}} & \textcolor{blue}{\underline{0.310}} \\
+    ETTm2 & 720 & \textcolor{blue}{\underline{0.274}} & \textcolor{red}{\textbf{0.349}} & 0.277 & 0.357 & 0.294 & 0.364 & 0.327 & 0.376 & 0.279 & 0.358 & 0.295 & 0.369 & \textcolor{red}{\textbf{0.272}} & \textcolor{blue}{\underline{0.351}} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Tab.~\ref{tab:tab4} (ablation) per-cell with MAE}
+\label{app:tab4-mae}
+
+Table~\ref{tab:tab4-mae} expands the ablation
+Table~\ref{tab:tab4} of the main text with MAE values and shows
+the full per-cell numbers.
+
+\begin{table}[h]
+  \caption{Per-cell MSE and MAE for the ablation study, on the
+    full ETT grid (16 cells per variant).
+    \textcolor{red}{\textbf{Red}}: best per row per metric.
+    \textcolor{blue}{\underline{Blue}}: 2nd best per row per
+    metric.}
+  \label{tab:tab4-mae}
+  \begin{center}
+  \scriptsize
+  \setlength{\tabcolsep}{2pt}
+  \begin{tabular}{ll|cc|cc|cc|cc|cc}
+    \toprule
+    Ds & H & \multicolumn{2}{c|}{w/o SRS} & \multicolumn{2}{c|}{w/o SP} & \multicolumn{2}{c|}{w/o DR} & \multicolumn{2}{c|}{w/o AF} & \multicolumn{2}{c}{SRSNet} \\
+       &   & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE & MSE & MAE \\
+    \midrule
+    ETTh1 & 96  & \textcolor{blue}{\underline{0.436}} & \textcolor{red}{\textbf{0.452}} & \textcolor{red}{\textbf{0.436}} & \textcolor{blue}{\underline{0.452}} & \textcolor{blue}{\underline{0.436}} & 0.453 & 0.445 & 0.468 & \textcolor{blue}{\underline{0.436}} & 0.453 \\
+    ETTh1 & 192 & \textcolor{blue}{\underline{0.481}} & \textcolor{red}{\textbf{0.483}} & 0.482 & \textcolor{blue}{\underline{0.484}} & 0.484 & 0.487 & 0.510 & 0.515 & \textcolor{red}{\textbf{0.481}} & 0.485 \\
+    ETTh1 & 336 & 0.540 & \textcolor{blue}{\underline{0.522}} & \textcolor{blue}{\underline{0.539}} & \textcolor{blue}{\underline{0.522}} & 0.540 & 0.522 & 0.555 & 0.538 & \textcolor{red}{\textbf{0.529}} & \textcolor{red}{\textbf{0.518}} \\
+    ETTh1 & 720 & \textcolor{red}{\textbf{0.653}} & \textcolor{red}{\textbf{0.598}} & \textcolor{blue}{\underline{0.655}} & \textcolor{blue}{\underline{0.599}} & 0.657 & 0.608 & 0.693 & 0.631 & 0.658 & 0.603 \\
+    \midrule
+    ETTh2 & 96  & \textcolor{red}{\textbf{0.217}} & \textcolor{red}{\textbf{0.315}} & \textcolor{blue}{\underline{0.219}} & \textcolor{red}{\textbf{0.315}} & 0.223 & \textcolor{blue}{\underline{0.320}} & 0.241 & 0.336 & 0.228 & 0.324 \\
+    ETTh2 & 192 & \textcolor{red}{\textbf{0.276}} & \textcolor{red}{\textbf{0.357}} & 0.279 & \textcolor{blue}{\underline{0.359}} & \textcolor{blue}{\underline{0.278}} & 0.360 & 0.296 & 0.375 & 0.282 & 0.361 \\
+    ETTh2 & 336 & \textcolor{red}{\textbf{0.313}} & \textcolor{red}{\textbf{0.381}} & \textcolor{blue}{\underline{0.313}} & \textcolor{blue}{\underline{0.381}} & 0.319 & 0.387 & 0.326 & 0.402 & 0.317 & 0.385 \\
+    ETTh2 & 720 & 0.419 & 0.446 & \textcolor{red}{\textbf{0.414}} & \textcolor{blue}{\underline{0.445}} & \textcolor{blue}{\underline{0.417}} & \textcolor{red}{\textbf{0.444}} & 0.428 & 0.449 & 0.425 & 0.448 \\
+    \midrule
+    ETTm1 & 96  & 0.322 & \textcolor{blue}{\underline{0.371}} & 0.321 & \textcolor{red}{\textbf{0.370}} & 0.321 & 0.372 & \textcolor{blue}{\underline{0.319}} & 0.373 & \textcolor{red}{\textbf{0.317}} & \textcolor{red}{\textbf{0.370}} \\
+    ETTm1 & 192 & 0.378 & 0.407 & 0.376 & 0.406 & \textcolor{blue}{\underline{0.369}} & \textcolor{blue}{\underline{0.406}} & 0.373 & 0.409 & \textcolor{red}{\textbf{0.369}} & \textcolor{red}{\textbf{0.405}} \\
+    ETTm1 & 336 & 0.431 & 0.444 & 0.430 & \textcolor{blue}{\underline{0.443}} & \textcolor{red}{\textbf{0.414}} & \textcolor{red}{\textbf{0.438}} & \textcolor{blue}{\underline{0.416}} & \textcolor{blue}{\underline{0.443}} & 0.418 & 0.444 \\
+    ETTm1 & 720 & 0.506 & \textcolor{red}{\textbf{0.480}} & \textcolor{red}{\textbf{0.504}} & \textcolor{blue}{\underline{0.482}} & 0.508 & 0.486 & 0.517 & 0.494 & \textcolor{blue}{\underline{0.506}} & 0.485 \\
+    \midrule
+    ETTm2 & 96  & 0.149 & \textcolor{blue}{\underline{0.254}} & 0.150 & 0.254 & \textcolor{blue}{\underline{0.149}} & 0.255 & 0.152 & 0.260 & \textcolor{red}{\textbf{0.148}} & \textcolor{red}{\textbf{0.253}} \\
+    ETTm2 & 192 & 0.181 & \textcolor{red}{\textbf{0.280}} & \textcolor{blue}{\underline{0.180}} & \textcolor{blue}{\underline{0.280}} & \textcolor{red}{\textbf{0.180}} & 0.282 & 0.191 & 0.292 & 0.182 & 0.281 \\
+    ETTm2 & 336 & \textcolor{blue}{\underline{0.214}} & \textcolor{red}{\textbf{0.305}} & 0.216 & \textcolor{blue}{\underline{0.307}} & 0.217 & 0.309 & 0.228 & 0.319 & \textcolor{red}{\textbf{0.214}} & 0.309 \\
+    ETTm2 & 720 & \textcolor{red}{\textbf{0.268}} & \textcolor{red}{\textbf{0.344}} & \textcolor{blue}{\underline{0.270}} & \textcolor{blue}{\underline{0.345}} & 0.277 & 0.351 & 0.294 & 0.368 & 0.275 & 0.353 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Encoder-extension per-cell with MAE}
+\label{app:encoder-cells}
+
+Table~\ref{tab:encoder-cells} reports the per-cell mean MSE and
+MAE for the three encoder-extension variants
+(Table~\ref{tab:encoder-ext} of the main text).
+
+\begin{table}[h]
+  \caption{Per-cell mean MSE and MAE for the three
+    encoder-extension variants ($5$ seeds per cell) on the full
+    ETT grid. \textcolor{red}{\textbf{Red}}: best per row per
+    metric. \textcolor{blue}{\underline{Blue}}: 2nd best per
+    row per metric.}
+  \label{tab:encoder-cells}
+  \begin{center}
+  \scriptsize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{ll|cc|cc|cc}
+    \toprule
+    Ds & H & \multicolumn{2}{c|}{Enc} & \multicolumn{2}{c|}{TASP$+$Enc} & \multicolumn{2}{c}{Hyp$+$Enc} \\
+       &   & MSE & MAE & MSE & MAE & MSE & MAE \\
+    \midrule
+    ETTh1 & 96  & \textcolor{blue}{\underline{0.433}} & \textcolor{blue}{\underline{0.462}} & 0.436 & 0.464 & \textcolor{red}{\textbf{0.431}} & \textcolor{red}{\textbf{0.461}} \\
+    ETTh1 & 192 & \textcolor{blue}{\underline{0.491}} & \textcolor{blue}{\underline{0.503}} & 0.492 & 0.503 & \textcolor{red}{\textbf{0.487}} & \textcolor{red}{\textbf{0.499}} \\
+    ETTh1 & 336 & \textcolor{red}{\textbf{0.532}} & \textcolor{red}{\textbf{0.526}} & \textcolor{blue}{\underline{0.532}} & \textcolor{blue}{\underline{0.527}} & 0.535 & 0.528 \\
+    ETTh1 & 720 & 0.691 & 0.635 & \textcolor{blue}{\underline{0.668}} & \textcolor{red}{\textbf{0.617}} & \textcolor{red}{\textbf{0.667}} & \textcolor{blue}{\underline{0.618}} \\
+    \midrule
+    ETTh2 & 96  & \textcolor{blue}{\underline{0.242}} & 0.335 & 0.244 & \textcolor{blue}{\underline{0.335}} & \textcolor{red}{\textbf{0.238}} & \textcolor{red}{\textbf{0.333}} \\
+    ETTh2 & 192 & 0.299 & \textcolor{blue}{\underline{0.374}} & \textcolor{blue}{\underline{0.299}} & 0.375 & \textcolor{red}{\textbf{0.297}} & \textcolor{red}{\textbf{0.372}} \\
+    ETTh2 & 336 & \textcolor{red}{\textbf{0.343}} & \textcolor{red}{\textbf{0.398}} & \textcolor{blue}{\underline{0.345}} & \textcolor{blue}{\underline{0.402}} & 0.347 & 0.402 \\
+    ETTh2 & 720 & 0.451 & 0.463 & \textcolor{blue}{\underline{0.434}} & \textcolor{blue}{\underline{0.454}} & \textcolor{red}{\textbf{0.426}} & \textcolor{red}{\textbf{0.448}} \\
+    \midrule
+    ETTm1 & 96  & \textcolor{blue}{\underline{0.328}} & \textcolor{blue}{\underline{0.377}} & \textcolor{red}{\textbf{0.326}} & \textcolor{red}{\textbf{0.375}} & 0.330 & 0.378 \\
+    ETTm1 & 192 & 0.390 & 0.420 & \textcolor{blue}{\underline{0.387}} & \textcolor{blue}{\underline{0.415}} & \textcolor{red}{\textbf{0.376}} & \textcolor{red}{\textbf{0.410}} \\
+    ETTm1 & 336 & \textcolor{blue}{\underline{0.421}} & \textcolor{blue}{\underline{0.444}} & 0.426 & 0.445 & \textcolor{red}{\textbf{0.421}} & \textcolor{red}{\textbf{0.444}} \\
+    ETTm1 & 720 & \textcolor{red}{\textbf{0.475}} & \textcolor{red}{\textbf{0.482}} & 0.487 & 0.486 & \textcolor{blue}{\underline{0.483}} & \textcolor{blue}{\underline{0.485}} \\
+    \midrule
+    ETTm2 & 96  & 0.153 & 0.262 & \textcolor{blue}{\underline{0.153}} & \textcolor{blue}{\underline{0.258}} & \textcolor{red}{\textbf{0.152}} & \textcolor{red}{\textbf{0.257}} \\
+    ETTm2 & 192 & \textcolor{blue}{\underline{0.195}} & \textcolor{blue}{\underline{0.296}} & 0.199 & 0.297 & \textcolor{red}{\textbf{0.189}} & \textcolor{red}{\textbf{0.293}} \\
+    ETTm2 & 336 & 0.231 & 0.323 & \textcolor{red}{\textbf{0.228}} & \textcolor{red}{\textbf{0.320}} & \textcolor{blue}{\underline{0.228}} & \textcolor{blue}{\underline{0.320}} \\
+    ETTm2 & 720 & 0.294 & 0.369 & \textcolor{blue}{\underline{0.292}} & \textcolor{blue}{\underline{0.365}} & \textcolor{red}{\textbf{0.287}} & \textcolor{red}{\textbf{0.360}} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Implementation details}
+\label{app:implementation}
+
+All extension layers are defined in
+\verb|ts_benchmark/baselines/srs_paper/extensions.py| in our
+fork. They inherit from the original \texttt{SRS} class of
+\citet{wu2025srsnet} and override exactly one method:
+
+\begin{itemize}
+  \item \texttt{SRSRandomSP.\_select}: replaces
+    \texttt{torch.argmax} on the scorer's output with a
+    \texttt{torch.randint} over the candidate dimension.
+  \item \texttt{SRSRandomSPNoShuffle.\_shuffle}: returns its
+    input unchanged (identity shuffle).
+  \item \texttt{SRSTimeAware.\_select}: computes per-window
+    FFT magnitude, autocorrelation, variance, and trend slope;
+    the scorer is a $4{\to}16{\to}n$ MLP over those features.
+  \item \texttt{SRSHypernetAF.forward}: zero-initialised
+    hypernet plus bias $=3.5$ produces the fusion weights from
+    a batch-level mean of the original-view embedding.
+\end{itemize}
+
+The encoder-extension wrappers
+(\texttt{SRSNet\_TransformerEncoder}, etc.) wrap the SRS
+module in a TransformerEncoder backbone with two layers, four
+heads, and feedforward dimension $4 \times d_\text{model}$
+before the FlattenHead. They are defined in the same file as
+the other extensions and share the same training pipeline.
+
+The runner exposes the variants through three scopes in
+\verb|scripts/repro/paper_repro.py|:
+\texttt{selectivity-controls} (small grid, 9 variants),
+\texttt{selectivity-controls-full-simple} (full grid, 5
+single-axis variants), and \texttt{encoder-extension} (full
+grid, 3 encoder variants). Because the runner skips already-
+completed metadata files, every scope is fully resume-aware.
+
+\section{Hyper-parameters}
+\label{app:hyperparams}
+Variants inherit the SRSNet hyper-parameters from the released dataset/horizon scripts. We only apply the
+paper-faithful runner overrides \texttt{batch\_size=64}, \texttt{train\_drop\_last=false}, 
+\texttt{num\_workers=0}, 
+and the model-name/seed changes needed for each variant.

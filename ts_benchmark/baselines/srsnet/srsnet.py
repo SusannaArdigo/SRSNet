@@ -26,14 +26,17 @@ MODEL_HYPER_PARAMS = {
 
 
 class SRSNet(DeepForecastingModelBase):
-    """
-    SRSNet adapter class.
+    """SRSNet adapter for the TFB pipeline.
 
-    Attributes:
-        model_name (str): Name of the model for identification purposes.
-        _init_model: Initializes an instance of the SRSNet.
-        _adjust_lr：Adjusts the learning rate of the optimizer based on the current epoch and configuration.
-        _process: Executes the model's forward pass and returns the output.
+    Subclasses DeepForecastingModelBase, which handles the training loop,
+    learning-rate scheduling, early stopping, save/load, and the rolling
+    forecast strategy. We only need to expose three things:
+
+        - model_name  : identifies the model in result CSVs / leaderboard
+        - _init_model : creates the underlying nn.Module (SRSNetModel)
+        - _process    : single forward pass used by eval/inference
+
+    Training-time forward is provided by the base class via `self.model(...)`.
     """
 
     def __init__(self, **kwargs):
@@ -47,6 +50,6 @@ class SRSNet(DeepForecastingModelBase):
         return SRSNetModel(self.config)
 
     def _process(self, input, target, input_mark, target_mark):
-        output = self.model(input)
-        out_loss = {"output": output}
+        output = self.model(input)             
+        out_loss = {"output": output}           
         return out_loss

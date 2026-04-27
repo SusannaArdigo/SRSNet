@@ -1,0 +1,4 @@
+# Overlay pins for local paper reproduction. Install the official
+# requirements.txt first, then this file if your resolver selects incompatible
+# modern versions.
+numpy<2

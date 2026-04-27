@@ -1,0 +1,30 @@
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.data_source(126): Start loading 1 series in parallel
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.data_source(135): Data loading finished.
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.suites.global_storage(40): Data server starting...
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.suites.global_storage(41): Start sending data to the global storage.
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.suites.global_storage(46): Notifying all workers to sync data from the global storage.
+2026-05-16 16:41:21 [INFO] ts_benchmark.data.suites.global_storage(49): Data server started.
+2026-05-16 16:41:21 [INFO] ts_benchmark.models.model_loader(102): Trying to load model ts_benchmark.baselines.srs_paper.SRSNet_HypernetAF
+
+scheduling SRSNet_HypernetAF:   0%|          | 0/1 [00:00<?, ?it/s]2026-05-16 16:41:21 [WARNING] ts_benchmark.baselines.deep_forecasting_model_base(56): The model parameter horizon is deprecated. Please use pred_len.
+
+scheduling SRSNet_HypernetAF: 100%|██████████| 1/1 [00:25<00:00, 25.47s/it]
+scheduling SRSNet_HypernetAF: 100%|██████████| 1/1 [00:25<00:00, 25.47s/it]
+---------------------------------------------------------- SRSNet_HypernetAF
+Total trainable parameters: 4130173
+Validation loss decreased (inf --> 0.502539).  Saving model ...
+Updating learning rate to 0.0001
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 5e-05
+EarlyStopping counter: 2 out of 5
+Updating learning rate to 2.5e-05
+EarlyStopping counter: 3 out of 5
+Updating learning rate to 1.25e-05
+EarlyStopping counter: 4 out of 5
+Updating learning rate to 6.25e-06
+EarlyStopping counter: 5 out of 5
+
+collecting SRSNet_HypernetAF:   0%|          | 0/1 [00:00<?, ?it/s]
+collecting SRSNet_HypernetAF: 100%|██████████| 1/1 [00:00<00:00, 33026.02it/s]
+collecting SRSNet_HypernetAF: 100%|██████████| 1/1 [00:00<00:00, 9510.89it/s] 
+2026-05-16 16:41:47 [INFO] ts_benchmark.recording(103): loading log file /home/ubuntu/SRSNet/result/repro/selectivity-controls/selectivity_controls/selectivity_controls_ETTh1_H720_SRSNet_HypernetAF_s2024/SRSNet_HypernetAF.1778949707.8e9af4e1-bd59-4abd-bd87-4b870b430c55-5f6cc66cbf-nfkn8.4215.csv.tar.gz
