@@ -5,3 +5,6 @@ result/
 .git
 *.DS_Store
 venv/
+.scannerwork/
+sonar-project.properties
+docs/
