@@ -1,9 +1,11 @@
 dataset/
 result/
+repro_results/
 .idea/
 .vscode/
 .git
 *.DS_Store
+__pycache__/
 venv/
 .scannerwork/
 sonar-project.properties

@@ -36,6 +36,7 @@ DEFAULT_HYPER_PARAMS = {
     "adj_lr_in_epoch": True,
     "adj_lr_in_batch": False,
     "parallel_strategy": None,
+    "train_drop_last": None,
 }
 
 
@@ -382,6 +383,8 @@ class DeepForecastingModelBase(ModelBase):
         else:
             train_drop_last = True
             self.multi_forecasting_hyper_param_tune(train_valid_data)
+        if self.config.train_drop_last is not None:
+            train_drop_last = bool(self.config.train_drop_last)
 
         self.model = self._init_model()
 
