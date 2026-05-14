@@ -820,10 +820,13 @@ def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
         command = _apply_parallel_mods(task.command, eff_conc)
         log_path = _log_path(scope, task.task_id)
         log_handle = log_path.open("w", buffering=1)
+        env = os.environ.copy()
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
         proc = subprocess.Popen(
             command, cwd=ROOT,
             stdout=log_handle, stderr=subprocess.STDOUT,
-            env=os.environ.copy(), text=True,
+            env=env, text=True,
             start_new_session=True,
         )
         slots[proc] = {
