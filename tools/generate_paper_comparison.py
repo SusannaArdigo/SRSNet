@@ -24,7 +24,77 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SUMMARY = ROOT / "repro_results" / "lite-paper" / "summary.csv"
+BASELINES_SUMMARY = ROOT / "repro_results" / "main-compat" / "summary.csv"
 OUT_DIR = ROOT / "report_tables"
+
+# Paper SRSNet Tab.8 (Appendix A.1) baseline numbers per ETT (4 horizon)
+# Per ogni (model, dataset, horizon) → (MSE, MAE) dal paper.
+# Source: arxiv 2510.14510 Tab.8
+PAPER_BASELINES_TAB2 = {
+    "PatchTST": {
+        ("ETTh1", 96): (0.377, 0.397), ("ETTh1", 192): (0.409, 0.425),
+        ("ETTh1", 336): (0.431, 0.444), ("ETTh1", 720): (0.457, 0.477),
+        ("ETTh2", 96): (0.274, 0.337), ("ETTh2", 192): (0.348, 0.384),
+        ("ETTh2", 336): (0.377, 0.416), ("ETTh2", 720): (0.406, 0.441),
+        ("ETTm1", 96): (0.289, 0.343), ("ETTm1", 192): (0.329, 0.368),
+        ("ETTm1", 336): (0.362, 0.390), ("ETTm1", 720): (0.416, 0.423),
+        ("ETTm2", 96): (0.165, 0.255), ("ETTm2", 192): (0.221, 0.293),
+        ("ETTm2", 336): (0.276, 0.327), ("ETTm2", 720): (0.362, 0.381),
+    },
+    "DLinear": {
+        ("ETTh1", 96): (0.379, 0.403), ("ETTh1", 192): (0.427, 0.435),
+        ("ETTh1", 336): (0.440, 0.440), ("ETTh1", 720): (0.473, 0.494),
+        ("ETTh2", 96): (0.300, 0.364), ("ETTh2", 192): (0.387, 0.423),
+        ("ETTh2", 336): (0.490, 0.487), ("ETTh2", 720): (0.704, 0.597),
+        ("ETTm1", 96): (0.300, 0.345), ("ETTm1", 192): (0.336, 0.366),
+        ("ETTm1", 336): (0.367, 0.386), ("ETTm1", 720): (0.419, 0.416),
+        ("ETTm2", 96): (0.164, 0.255), ("ETTm2", 192): (0.224, 0.304),
+        ("ETTm2", 336): (0.277, 0.337), ("ETTm2", 720): (0.371, 0.401),
+    },
+    "iTransformer": {
+        ("ETTh1", 96): (0.386, 0.405), ("ETTh1", 192): (0.430, 0.435),
+        ("ETTh1", 336): (0.450, 0.452), ("ETTh1", 720): (0.495, 0.487),
+        ("ETTh2", 96): (0.292, 0.347), ("ETTh2", 192): (0.348, 0.384),
+        ("ETTh2", 336): (0.372, 0.407), ("ETTh2", 720): (0.424, 0.444),
+        ("ETTm1", 96): (0.287, 0.342), ("ETTm1", 192): (0.331, 0.371),
+        ("ETTm1", 336): (0.358, 0.384), ("ETTm1", 720): (0.412, 0.416),
+        ("ETTm2", 96): (0.168, 0.262), ("ETTm2", 192): (0.224, 0.295),
+        ("ETTm2", 336): (0.274, 0.330), ("ETTm2", 720): (0.367, 0.385),
+    },
+    "TimesNet": {
+        ("ETTh1", 96): (0.389, 0.412), ("ETTh1", 192): (0.440, 0.443),
+        ("ETTh1", 336): (0.523, 0.487), ("ETTh1", 720): (0.521, 0.495),
+        ("ETTh2", 96): (0.334, 0.370), ("ETTh2", 192): (0.404, 0.413),
+        ("ETTh2", 336): (0.389, 0.435), ("ETTh2", 720): (0.434, 0.448),
+        ("ETTm1", 96): (0.340, 0.378), ("ETTm1", 192): (0.392, 0.404),
+        ("ETTm1", 336): (0.423, 0.426), ("ETTm1", 720): (0.475, 0.453),
+        ("ETTm2", 96): (0.189, 0.265), ("ETTm2", 192): (0.254, 0.310),
+        ("ETTm2", 336): (0.313, 0.345), ("ETTm2", 720): (0.413, 0.402),
+    },
+    "TimeMixer": {
+        ("ETTh1", 96): (0.372, 0.401), ("ETTh1", 192): (0.413, 0.430),
+        ("ETTh1", 336): (0.438, 0.450), ("ETTh1", 720): (0.483, 0.483),
+        ("ETTh2", 96): (0.270, 0.342), ("ETTh2", 192): (0.349, 0.387),
+        ("ETTh2", 336): (0.367, 0.410), ("ETTh2", 720): (0.401, 0.436),
+        ("ETTm1", 96): (0.293, 0.345), ("ETTm1", 192): (0.335, 0.372),
+        ("ETTm1", 336): (0.368, 0.386), ("ETTm1", 720): (0.426, 0.417),
+        ("ETTm2", 96): (0.165, 0.256), ("ETTm2", 192): (0.225, 0.298),
+        ("ETTm2", 336): (0.277, 0.332), ("ETTm2", 720): (0.360, 0.387),
+    },
+    "xPatch": {
+        # paper Tab.8: xPatch su 4 ETT
+        ("ETTh1", 96): (0.368, 0.396), ("ETTh1", 192): (0.408, 0.421),
+        ("ETTh1", 336): (0.436, 0.435), ("ETTh1", 720): (0.453, 0.465),
+        ("ETTm2", 96): (0.160, 0.245), ("ETTm2", 192): (0.219, 0.287),
+        ("ETTm2", 336): (0.272, 0.323), ("ETTm2", 720): (0.361, 0.378),
+    },
+    "PatchMLP": {
+        ("ETTh1", 96): (0.380, 0.395), ("ETTh1", 192): (0.430, 0.441),
+        ("ETTh1", 336): (0.451, 0.453), ("ETTh1", 720): (0.479, 0.484),
+        ("ETTm2", 96): (0.168, 0.259), ("ETTm2", 192): (0.228, 0.300),
+        ("ETTm2", 336): (0.275, 0.330), ("ETTm2", 720): (0.371, 0.398),
+    },
+}
 
 # Paper SRSNet Tab.6 values per ETT (4 horizon)
 # Source: arxiv 2510.14510 Appendix A.1
@@ -346,16 +416,149 @@ def gen_report(rows, srsnet_cells):
     print(f"  ✅ {out_path.name}")
 
 
+def load_baselines_summary():
+    """Read main-compat/summary.csv + test_reports locali per i baseline."""
+    if not BASELINES_SUMMARY.exists():
+        return []
+    rows = []
+    local_results = ROOT / "result" / "repro" / "main-compat"
+    with open(BASELINES_SUMMARY) as f:
+        for r in csv.DictReader(f):
+            if r["status"] != "completed":
+                continue
+            task_dir = local_results / r["table"] / r["task_id"]
+            if not task_dir.exists():
+                continue
+            reports = list(task_dir.glob("test_report*.csv"))
+            if not reports:
+                continue
+            metrics = {}
+            with open(reports[0]) as rf:
+                next(rf)
+                for line in rf:
+                    parts = line.rstrip("\n").rsplit(",", 1)
+                    if len(parts) != 2:
+                        continue
+                    name = parts[0].split(",")[-1].strip().strip('"')
+                    try:
+                        val = float(parts[1])
+                    except ValueError:
+                        continue
+                    metrics[name] = val
+            r["mse"] = str(metrics.get("mse_norm", ""))
+            r["mae"] = str(metrics.get("mae_norm", ""))
+            rows.append(r)
+    return rows
+
+
+def gen_tab2_full(srsnet_rows, baseline_rows):
+    """Tab.2 ESTESA con SRSNet + 7 baseline (8 modelli totali) × 4 ETT × 4 H.
+    Output: tab2_full_paper_repro.csv con delta% vs paper per ogni cella.
+    """
+    out_path = OUT_DIR / "tab2_full_paper_repro.csv"
+    models = ["SRSNet", "PatchTST", "DLinear", "iTransformer", "TimesNet",
+              "TimeMixer", "xPatch", "PatchMLP"]
+    datasets = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
+    horizons = [96, 192, 336, 720]
+
+    # Build cells dict: (model, ds, h) → (mse, mae)
+    cells = {}
+    for r in srsnet_rows:
+        if r["model"] == "SRSNet":
+            cells[("SRSNet", r["dataset"], int(r["horizon"]))] = (
+                to_float(r["mse"]), to_float(r["mae"]))
+    for r in baseline_rows:
+        cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
+            to_float(r["mse"]), to_float(r["mae"]))
+
+    # Build header
+    header = ["dataset", "horizon"]
+    for m in models:
+        header += [f"{m}_MSE", f"{m}_MAE"]
+    lines = [",".join(header)]
+
+    # Per-cell rows
+    avgs = {m: [] for m in models}
+    for d in datasets:
+        for h in horizons:
+            row = [d, str(h)]
+            for m in models:
+                cell = cells.get((m, d, h))
+                if cell is None or cell[0] is None:
+                    row += ["", ""]
+                else:
+                    row += [fmt(cell[0]), fmt(cell[1])]
+                    avgs[m].append(cell)
+            lines.append(",".join(row))
+
+    # AVERAGE row
+    avg_row = ["AVERAGE", ""]
+    for m in models:
+        if avgs[m]:
+            am = sum(c[0] for c in avgs[m]) / len(avgs[m])
+            ae = sum(c[1] for c in avgs[m]) / len(avgs[m])
+            avg_row += [fmt(am), fmt(ae)]
+        else:
+            avg_row += ["", ""]
+    lines.append(",".join(avg_row))
+
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  ✅ {out_path.name}: {len(models)} models × {len(datasets)*len(horizons)} cells")
+
+
+def gen_baselines_paper_delta(baseline_rows):
+    """Confronto baseline vs paper Tab.8. Output: tab2_baselines_paper_delta.csv."""
+    out_path = OUT_DIR / "tab2_baselines_paper_delta.csv"
+    cells = {}
+    for r in baseline_rows:
+        cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
+            to_float(r["mse"]), to_float(r["mae"]))
+
+    header = ["model", "dataset", "horizon", "ours_MSE", "ours_MAE",
+              "paper_MSE", "paper_MAE", "delta_MSE_pct", "delta_MAE_pct"]
+    lines = [",".join(header)]
+    by_model = defaultdict(list)
+    for m in PAPER_BASELINES_TAB2:
+        for (ds, h), (paper_mse, paper_mae) in PAPER_BASELINES_TAB2[m].items():
+            ours = cells.get((m, ds, h), (None, None))
+            d_mse = delta_pct(ours[0], paper_mse)
+            d_mae = delta_pct(ours[1], paper_mae)
+            lines.append(",".join([
+                m, ds, str(h),
+                fmt(ours[0]), fmt(ours[1]),
+                fmt(paper_mse, 3), fmt(paper_mae, 3),
+                f"{d_mse:+.2f}" if d_mse is not None else "",
+                f"{d_mae:+.2f}" if d_mae is not None else "",
+            ]))
+            if d_mse is not None:
+                by_model[m].append(d_mse)
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  ✅ {out_path.name}: {len(lines)-1} cells across {len(PAPER_BASELINES_TAB2)} models")
+    print()
+    print("  Delta% medio per modello (signed):")
+    for m in sorted(by_model):
+        vals = by_model[m]
+        mean = sum(vals) / len(vals)
+        abs_mean = sum(abs(v) for v in vals) / len(vals)
+        print(f"    {m:15s}: mean={mean:+6.2f}%  abs={abs_mean:5.2f}%  n={len(vals)}")
+
+
 def main():
     OUT_DIR.mkdir(exist_ok=True)
     rows = load_summary()
-    print(f"Loaded {len(rows)} completed rows from summary.csv")
+    print(f"Loaded {len(rows)} completed rows from lite-paper summary.csv")
+    baseline_rows = load_baselines_summary()
+    print(f"Loaded {len(baseline_rows)} completed rows from main-compat summary.csv")
     print()
     srsnet_cells = gen_tab2(rows)
     gen_tab3(rows)
     gen_tab4(rows)
     gen_summary_stats(rows)
     gen_report(rows, srsnet_cells)
+    if baseline_rows:
+        print()
+        gen_tab2_full(rows, baseline_rows)
+        gen_baselines_paper_delta(baseline_rows)
     print()
     print("✅ Done.")
 
