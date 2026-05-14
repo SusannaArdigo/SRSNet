@@ -288,7 +288,10 @@ def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_le
     cmd = list(tokens)
     cmd[0] = sys.executable
     cmd = _set_option(cmd, "--gpus", gpu)
-    cmd = _set_option(cmd, "--num-workers", 1)
+    # NB: num-workers=0 evita errori "No space left on device" su /dev/shm
+    # piccoli (es. container Hivenet con shm=64MB). Trade-off: data loading
+    # leggermente più lento ma stabile su qualunque setup.
+    cmd = _set_option(cmd, "--num-workers", 0)
     cmd = _set_option(cmd, "--save-path", save_path)
     if seed is not None:
         cmd = _set_option(cmd, "--seed", seed)
