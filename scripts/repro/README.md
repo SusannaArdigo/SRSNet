@@ -160,6 +160,8 @@ Three correctness guarantees, all enforced by the scheduler:
    {"model": "FEDformer", "dataset": ("Solar", "Traffic", "Electricity")},
    {"model": "Crossformer", "dataset": ("Solar", "Traffic", "Electricity"),
     "horizon": (336, 720)},
+   {"model": ("PatchTST", "SRSPlusPatchTST"), "dataset": "Solar",
+    "horizon": 720},
    {"model": "Pathformer", "dataset": ("Traffic", "Electricity"),
     "horizon": (336, 720)},
    {"dataset": ("Traffic", "Electricity"), "horizon": 720, "seq_len": 512},
@@ -168,13 +170,12 @@ Three correctness guarantees, all enforced by the scheduler:
    If you discover a new OOM pattern, add a rule here. No silent fallback
    logic exists; the only response to OOM in parallel mode is a hard fail.
 
-2. **Bit-faithful numerics under contention.** When a row's
-   `effective_concurrency >= 2`, the runner rewrites `--deterministic`
-   to `full`. That sets `cudnn.deterministic=True`,
-   `cudnn.benchmark=False`, `cudnn.enabled=False` in the child
-   (`ts_benchmark/utils/random_utils.py:18-31`), so parallel-trained
-   results are bit-equivalent to a clean-GPU sequential run. Slight
-   slowdown (5-15%); paper-faithful claim preserved.
+2. **No hidden experiment rewrites.** Parallel mode preserves the exact
+   official/paper-normalized command, including `--deterministic`.
+   Concurrency changes scheduling and wall-clock behavior, not the
+   training/evaluation configuration or resume identity. Efficiency
+   rows still run alone because their wall-clock timings would be
+   invalid under co-tenancy.
 
 3. **No OOM batch-halving in parallel.** Sequential mode (`--parallel 1`)
    keeps the paper's stated bs=64 → floor 8 halving policy. Parallel
@@ -203,33 +204,23 @@ OK    table2_srsnet_ETTh1_H96_SRSNet_s2021  (612.3s)
 Switching `--parallel` values between runs is safe and reuses
 previously completed rows:
 
-- The `requested_config_hash` is computed from `task.command`, which
-  never contains the injected `--deterministic full` (that's a
-  runtime-only rewrite). So the resume identity is stable across
-  `--parallel` values.
+- The `requested_config_hash` is computed from `task.command`, and
+  parallel mode does not rewrite experiment options. So the resume
+  identity is stable across `--parallel` values.
 - This means: if you run `--parallel 1` to completion of 100 rows then
-  switch to `--parallel 4`, those 100 rows are skipped. They were
-  trained with the official default `--deterministic efficient`
-  (cudnn nondeterminism *allowed* on a clean single-tenant GPU). New
-  rows at `--parallel 4` are trained with `--deterministic full`
-  (cudnn nondeterminism *forbidden*, bit-equivalent under contention).
-- The two settings produce numbers that are extremely close in
-  practice (cudnn nondeterminism contributes far below paper-reported
-  precision), but the *result set is technically mixed*. If you want
-  a strictly homogeneous set, run a single mode end-to-end or use
-  `--force` when switching.
+  switch to `--parallel 4`, those 100 rows are skipped. New rows use
+  the same command-level deterministic setting as the skipped rows.
 - Metadata records the actual `deterministic_used` and
   `effective_concurrency` per row, so the audit trail tells you which
-  rows were trained under which setting.
+  rows were trained under which scheduler setting.
 
 ### Ctrl+C and orphan safety
 
-Children inherit the parent's process group. Terminal Ctrl+C reaches
-every child simultaneously. The parent also explicitly broadcasts
-SIGTERM (5s grace) then SIGKILL on `KeyboardInterrupt`/`RuntimeError`
-so non-terminal stops (`kill <pid>`, `timeout` wrapper, systemd) also
-leave no orphans. Verify with `ps -ef | grep run_benchmark.py` and
-`nvidia-smi` after any abnormal exit.
+Each child is started in its own process group. On Ctrl+C, SIGTERM, or
+an internal fail-loud stop, the parent sends SIGTERM to every live child
+group, waits 5 seconds, then sends SIGKILL to remaining groups. Verify
+with `ps -ef | grep run_benchmark.py` and `nvidia-smi` after any
+abnormal exit.
 
 ### Tuning N
 
@@ -355,13 +346,10 @@ horizon split). The `result_file` field in metadata points there.
   is disabled and the row fails loud; re-run failed rows at
   `--parallel 1` to recover them.
 - **Switching `--parallel` values does not invalidate completed rows.**
-  The runtime `--deterministic full` injection is not part of the
-  resume identity hash, so previously completed rows are reused.
-  Result: the set can be mixed (some rows trained at `efficient`, some
-  at `full`). In practice the numbers are nearly identical; if you
-  want a homogeneous set, run a single mode end-to-end or use
-  `--force`. The `deterministic_used` field in each row's metadata
-  records which setting was actually used.
+  Parallel mode does not rewrite experiment options, so previously
+  completed rows are reused under the same config identity. The
+  `effective_concurrency` field in each row's metadata records which
+  scheduler setting was actually used.
 
 ---
 

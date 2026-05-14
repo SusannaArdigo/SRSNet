@@ -39,6 +39,9 @@ HEAVY_ROWS = [
     # Attention-heavy models on largest-channel datasets.
     {"model": "FEDformer", "dataset": ("Solar", "Traffic", "Electricity")},
     {"model": "Crossformer", "dataset": ("Solar", "Traffic", "Electricity"), "horizon": (336, 720)},
+    # Paper Table 6 reports PatchTST/Solar/H720 above 24GB at bs=32; paper-mode
+    # training starts at bs=64, so never pack these with other rows.
+    {"model": ("PatchTST", "SRSPlusPatchTST"), "dataset": "Solar", "horizon": 720},
     {"model": "Pathformer", "dataset": ("Traffic", "Electricity"), "horizon": (336, 720)},
     # Generic high-channel + long-horizon combo at the paper's 512 lookback.
     {"dataset": ("Traffic", "Electricity"), "horizon": 720, "seq_len": 512},
@@ -133,8 +136,19 @@ class Task:
         return _command_hash(self.command)
 
 
-def _match_field(task, key, expected):
+def _task_field(task, key):
     actual = getattr(task, key, None)
+    if actual is not None or key != "seq_len" or not task.command:
+        return actual
+    try:
+        seq_len = _json_option(task.command, "--model-hyper-params").get("seq_len")
+        return int(seq_len) if seq_len is not None else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _match_field(task, key, expected):
+    actual = _task_field(task, key)
     if isinstance(expected, tuple):
         return actual in expected
     return actual == expected
@@ -625,17 +639,13 @@ def _log_path(scope, task_id):
 
 
 def _apply_parallel_mods(command, effective_concurrency):
-    """Apply concurrency-dependent command rewrites.
+    """Return the exact experiment command for a parallel slot.
 
-    When effective concurrency >= 2, force --deterministic full so that
-    PyTorch uses cudnn.deterministic=True, cudnn.benchmark=False,
-    cudnn.enabled=False -- making results bit-equivalent to a clean-GPU
-    sequential run regardless of co-tenants on the device.
+    Parallelism must not silently alter training/evaluation configuration.
+    In particular, --deterministic is part of the experiment identity, so it is
+    preserved exactly as it appears in the official/paper-normalized command.
     """
-    cmd = list(command)
-    if effective_concurrency >= 2:
-        cmd = _set_option(cmd, "--deterministic", "full")
-    return cmd
+    return list(command)
 
 
 def _write_failed_status(scope, task, command, attempts, started, log_file):
@@ -685,12 +695,15 @@ def _write_completed(scope, task, command, attempts, started, effective_concurre
 
 
 def _shutdown_children(slots, grace=5.0):
-    """SIGTERM all live children, wait up to `grace` seconds, then SIGKILL."""
+    """SIGTERM child process groups, wait up to `grace` seconds, then SIGKILL."""
     for proc in list(slots):
         try:
-            proc.terminate()
+            os.killpg(proc.pid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
-            pass
+            try:
+                proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass
     deadline = time.time() + grace
     for proc in list(slots):
         remaining = max(0.0, deadline - time.time())
@@ -698,9 +711,12 @@ def _shutdown_children(slots, grace=5.0):
             proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             try:
-                proc.kill()
+                os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
-                pass
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
 
 
 def run_tasks(scope, tasks, *, resume=True, keep_going=False, dry_run=False, max_tasks=None, parallel=1):
@@ -804,15 +820,11 @@ def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
         command = _apply_parallel_mods(task.command, eff_conc)
         log_path = _log_path(scope, task.task_id)
         log_handle = log_path.open("w", buffering=1)
-        env = {
-            **os.environ,
-            "OMP_NUM_THREADS": "1",
-            "MKL_NUM_THREADS": "1",
-        }
         proc = subprocess.Popen(
             command, cwd=ROOT,
             stdout=log_handle, stderr=subprocess.STDOUT,
-            env=env, text=True,
+            env=os.environ.copy(), text=True,
+            start_new_session=True,
         )
         slots[proc] = {
             "task": task,
@@ -836,6 +848,12 @@ def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
                     return proc, rc
             time.sleep(0.5)
 
+    old_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _raise_keyboard_interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
     try:
         while runnable or slots:
             while runnable and len(slots) < parallel and _admit_ok(runnable[0]):
@@ -899,6 +917,8 @@ def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
         if isinstance(exc, KeyboardInterrupt):
             raise SystemExit(130)
         raise SystemExit(1)
+    finally:
+        signal.signal(signal.SIGTERM, old_sigterm)
 
     if failed_any and not keep_going:
         raise SystemExit(1)
@@ -1076,8 +1096,8 @@ def main():
     parser.add_argument(
         "--parallel", type=int, default=1,
         help="Max concurrent tasks (default 1). Heavy rows and efficiency "
-             "rows always run alone. At --parallel >=2, --deterministic full "
-             "is forced for co-tenant rows and OOM batch-halving is disabled.",
+             "rows always run alone. At --parallel >=2, OOM batch-halving "
+             "is disabled so failed rows can be retried sequentially.",
     )
     parser.add_argument("--smoke-dataset", default="ETTh1")
     parser.add_argument("--smoke-horizon", type=int, default=96)
