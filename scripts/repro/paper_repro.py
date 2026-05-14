@@ -78,6 +78,11 @@ PAPER_BASELINES = {
     "Transformer",
     "Nonstationary_Transformer",
     "Reformer",
+    # NB: PatchTST e iTransformer mancavano dal PAPER_BASELINES originale ma
+    # sono PRESENTI nella Tab.2 del paper SRSNet (arxiv 2510.14510). Aggiunti
+    # per coverage completa dei baseline su ETT.
+    "PatchTST",
+    "iTransformer",
 }
 
 SRSNET_TABLE2 = {
