@@ -64,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       EXTRA+=("$1" "$2")
       shift 2
       ;;
+    --datasets|--models)
+      EXTRA+=("$1" "$2")
+      shift 2
+      ;;
     --no-inhibit)
       INHIBIT=0
       shift

@@ -1106,7 +1106,21 @@ def main():
     parser.add_argument("--smoke-horizon", type=int, default=96)
     parser.add_argument("--smoke-tolerance-mse", type=float, default=0.08)
     parser.add_argument("--smoke-tolerance-mae", type=float, default=0.08)
+    parser.add_argument(
+        "--datasets", type=str, default=None,
+        help="Comma-separated dataset filter (e.g. 'ETTh1,ETTh2,ETTm1,ETTm2'). "
+             "If unset, uses scope default (all 8 PAPER_DATASETS).",
+    )
+    parser.add_argument(
+        "--models", type=str, default=None,
+        help="Comma-separated model name filter (e.g. 'SRSNet,PatchTST,DLinear'). "
+             "Matches task.model. If unset, no model filtering.",
+    )
     args = parser.parse_args()
+
+    # Parse filters
+    datasets_filter = set(args.datasets.split(",")) if args.datasets else None
+    models_filter = set(args.models.split(",")) if args.models else None
 
     if args.command == "check-data":
         check_data()
@@ -1119,6 +1133,23 @@ def main():
         return
 
     tasks = build_tasks(args.scope, args.gpu)
+
+    # Applica filtri opzionali (--datasets, --models)
+    if datasets_filter or models_filter:
+        before = len(tasks)
+        filtered = []
+        for t in tasks:
+            if datasets_filter and t.dataset not in datasets_filter:
+                continue
+            if models_filter and t.model not in models_filter:
+                # Permetti anche match parziale (es. "SRSNet" matches "SRSNet_NoSRS")
+                if not any(m in t.model or t.model.startswith(m) for m in models_filter):
+                    continue
+            filtered.append(t)
+        tasks = filtered
+        print(f"Filter applied: datasets={datasets_filter} models={models_filter} → "
+              f"{len(tasks)}/{before} tasks kept")
+
     write_manifest(args.scope, tasks)
     if args.command in {"manifest", "dry-coverage"}:
         print(f"Wrote {_manifest_path(args.scope)} ({len(tasks)} tasks)")
