@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -25,6 +26,23 @@ PAPER_LOOKBACKS = [96, 336, 512]
 PAPER_SRSNET_SEEDS = [2021, 2022, 2023, 2024, 2025]
 PAPER_BATCH_FLOOR = 8
 METRIC_SPACE = "mse_norm/mae_norm after model inverse_transform, normalized by the evaluator train split scaler"
+
+# Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
+# Each rule is a dict; a task matches a rule if ALL listed fields equal the
+# rule's value. Tuple values mean "any of these". Add a new entry here when
+# you discover a fresh OOM pattern -- do not encode silent fallbacks
+# elsewhere in the runner.
+HEAVY_ROWS = [
+    # Efficiency profilers measure wall-clock; co-tenants invalidate them.
+    {"table": "table5_efficiency"},
+    {"table": "table6_efficiency"},
+    # Attention-heavy models on largest-channel datasets.
+    {"model": "FEDformer", "dataset": ("Solar", "Traffic", "Electricity")},
+    {"model": "Crossformer", "dataset": ("Solar", "Traffic", "Electricity"), "horizon": (336, 720)},
+    {"model": "Pathformer", "dataset": ("Traffic", "Electricity"), "horizon": (336, 720)},
+    # Generic high-channel + long-horizon combo at the paper's 512 lookback.
+    {"dataset": ("Traffic", "Electricity"), "horizon": 720, "seq_len": 512},
+]
 PLUGIN_MODELS = [
     ("SRSNet", None),
     ("SRSNet", "srs_paper.SRSNet_NoSRS"),
@@ -113,6 +131,21 @@ class Task:
     @property
     def command_hash(self):
         return _command_hash(self.command)
+
+
+def _match_field(task, key, expected):
+    actual = getattr(task, key, None)
+    if isinstance(expected, tuple):
+        return actual in expected
+    return actual == expected
+
+
+def is_heavy(task):
+    """True iff this task must run with no co-tenants on the GPU."""
+    for rule in HEAVY_ROWS:
+        if all(_match_field(task, k, v) for k, v in rule.items()):
+            return True
+    return False
 
 
 def _command_hash(command):
@@ -585,7 +618,101 @@ def check_stale_results(scope):
     raise SystemExit(1)
 
 
-def run_tasks(scope, tasks, *, resume=True, keep_going=False, dry_run=False, max_tasks=None):
+def _log_path(scope, task_id):
+    log_dir = REPRO_ROOT / scope / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{task_id}.log"
+
+
+def _apply_parallel_mods(command, effective_concurrency):
+    """Apply concurrency-dependent command rewrites.
+
+    When effective concurrency >= 2, force --deterministic full so that
+    PyTorch uses cudnn.deterministic=True, cudnn.benchmark=False,
+    cudnn.enabled=False -- making results bit-equivalent to a clean-GPU
+    sequential run regardless of co-tenants on the device.
+    """
+    cmd = list(command)
+    if effective_concurrency >= 2:
+        cmd = _set_option(cmd, "--deterministic", "full")
+    return cmd
+
+
+def _write_failed_status(scope, task, command, attempts, started, log_file):
+    _append_status(
+        scope,
+        {
+            **asdict(task),
+            "status": "failed",
+            "command_hash": task.command_hash,
+            "result_file": "",
+            "attempts": attempts,
+            "log_file": str(log_file),
+            "final_command": command,
+            "final_batch_size": _batch_size(command) if command else "",
+            "started_at": started,
+            "ended_at": time.time(),
+        },
+    )
+
+
+def _write_completed(scope, task, command, attempts, started, effective_concurrency, parallel_requested):
+    result_file = _latest_report(task.save_path) or _explicit_output(command)
+    metadata = {
+        **asdict(task),
+        "status": "completed",
+        "requested_command": task.command,
+        "final_command": command,
+        "requested_command_hash": task.command_hash,
+        "command_hash": _command_hash(command),
+        "requested_config_hash": _config_hash(task, task.command),
+        "config_hash": _config_hash(task, command),
+        "requested_identity": _identity_payload(task, task.command),
+        "final_identity": _identity_payload(task, command),
+        "final_batch_size": _batch_size(command),
+        "result_file": result_file,
+        "attempts": attempts,
+        "metric_space": METRIC_SPACE,
+        "effective_concurrency": effective_concurrency,
+        "parallel_requested": parallel_requested,
+        "deterministic_used": _option(command, "--deterministic", "efficient"),
+        "heavy_classified": is_heavy(task),
+        "started_at": started,
+        "ended_at": time.time(),
+    }
+    _write_metadata(scope, task.task_id, metadata)
+    _append_status(scope, metadata)
+
+
+def _shutdown_children(slots, grace=5.0):
+    """SIGTERM all live children, wait up to `grace` seconds, then SIGKILL."""
+    for proc in list(slots):
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass
+    deadline = time.time() + grace
+    for proc in list(slots):
+        remaining = max(0.0, deadline - time.time())
+        try:
+            proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+
+def run_tasks(scope, tasks, *, resume=True, keep_going=False, dry_run=False, max_tasks=None, parallel=1):
+    if parallel < 1:
+        raise ValueError(f"--parallel must be >= 1 (got {parallel})")
+    if parallel >= 2 and not dry_run:
+        return _run_parallel(
+            scope, tasks,
+            resume=resume, keep_going=keep_going,
+            max_tasks=max_tasks, parallel=parallel,
+        )
+
     statuses = _load_status(scope)
     selected = tasks[: max_tasks or len(tasks)]
     for index, task in enumerate(selected, start=1):
@@ -597,68 +724,184 @@ def run_tasks(scope, tasks, *, resume=True, keep_going=False, dry_run=False, max
         if resume and _completed_metadata_matches(scope, task, previous):
             print(f"[{index}/{len(selected)}] skip {task.task_id}")
             continue
-        print(f"[{index}/{len(selected)}] run {task.task_id}")
-        print(shlex.join(task.command))
+        eff_conc = 1 if (parallel == 1 or is_heavy(task)) else parallel
+        preview_cmd = _apply_parallel_mods(task.command, eff_conc)
+        print(f"[{index}/{len(selected)}] run {task.task_id} (conc={eff_conc})")
+        print(shlex.join(preview_cmd))
         if dry_run:
             continue
-        command = list(task.command)
+        command = list(preview_cmd)
         attempts = []
+        log_file = _log_path(scope, task.task_id)
         while True:
             started = time.time()
             proc = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             output = proc.stdout or ""
-            log_dir = REPRO_ROOT / scope / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / f"{task.task_id}.log"
             log_file.write_text(output)
             attempts.append({"returncode": proc.returncode, "batch_size": _batch_size(command)})
             if proc.returncode == 0:
-                result_file = _latest_report(task.save_path) or _explicit_output(command)
-                metadata = {
-                    **asdict(task),
-                    "status": "completed",
-                    "requested_command": task.command,
-                    "final_command": command,
-                    "requested_command_hash": task.command_hash,
-                    "command_hash": _command_hash(command),
-                    "requested_config_hash": _config_hash(task, task.command),
-                    "config_hash": _config_hash(task, command),
-                    "requested_identity": _identity_payload(task, task.command),
-                    "final_identity": _identity_payload(task, command),
-                    "final_batch_size": _batch_size(command),
-                    "result_file": result_file,
-                    "attempts": attempts,
-                    "metric_space": METRIC_SPACE,
-                    "started_at": started,
-                    "ended_at": time.time(),
-                }
-                _write_metadata(scope, task.task_id, metadata)
-                _append_status(
-                    scope,
-                    metadata,
-                )
+                _write_completed(scope, task, command, attempts, started, eff_conc, parallel)
                 break
             batch_size = _batch_size(command)
             if task.oom_retry and _oom_text(output) and batch_size > PAPER_BATCH_FLOOR:
                 command = _with_batch_size(command, max(PAPER_BATCH_FLOOR, batch_size // 2))
                 print(f"OOM; retrying {task.task_id} with batch_size={_batch_size(command)}")
                 continue
-            _append_status(
-                scope,
-                {
-                    **asdict(task),
-                    "status": "failed",
-                    "command_hash": task.command_hash,
-                    "result_file": "",
-                    "attempts": attempts,
-                    "log_file": str(log_file),
-                    "started_at": started,
-                    "ended_at": time.time(),
-                },
-            )
+            _write_failed_status(scope, task, command, attempts, started, log_file)
             if not keep_going:
                 raise SystemExit(f"failed: {task.task_id}; see {log_file}")
             break
+
+
+def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
+    """Popen-pool scheduler. At most `parallel` children alive. Heavy rows
+    and rows whose neighbors include a heavy row run with no co-tenants.
+    No OOM batch-halving in this path -- OOM failures are loud."""
+    statuses = _load_status(scope)
+    selected = list(tasks[: max_tasks or len(tasks)])
+
+    # Filter up front: drop non-pending and resume-skips so the dispatch
+    # loop only deals with admissible work.
+    runnable = []
+    for task in selected:
+        if task.status != "pending":
+            print(f"{task.status} {task.task_id}")
+            _append_status(scope, {**asdict(task), "status": task.status, "command_hash": "", "result_file": "", "ended_at": time.time()})
+            continue
+        previous = statuses.get(task.task_id)
+        if resume and _completed_metadata_matches(scope, task, previous):
+            print(f"skip {task.task_id}")
+            continue
+        runnable.append(task)
+
+    total = len(runnable)
+    if not total:
+        print("nothing to do")
+        return
+
+    print(f"parallel={parallel}; {total} runnable tasks")
+
+    # slot: Popen -> dict(task, command, eff_conc, started, log_handle, log_path)
+    slots = {}
+    failed_any = False
+    index = 0
+
+    def _heavy_in_slots():
+        return any(slot["heavy"] for slot in slots.values())
+
+    def _admit_ok(next_task):
+        # If a heavy row is already running, no new admissions.
+        if _heavy_in_slots():
+            return False
+        # If the next task is heavy, it requires an empty pool.
+        if is_heavy(next_task):
+            return not slots
+        return True
+
+    def _spawn(task):
+        nonlocal index
+        eff_conc = 1 if is_heavy(task) else parallel
+        command = _apply_parallel_mods(task.command, eff_conc)
+        log_path = _log_path(scope, task.task_id)
+        log_handle = log_path.open("w", buffering=1)
+        env = {
+            **os.environ,
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        }
+        proc = subprocess.Popen(
+            command, cwd=ROOT,
+            stdout=log_handle, stderr=subprocess.STDOUT,
+            env=env, text=True,
+        )
+        slots[proc] = {
+            "task": task,
+            "command": command,
+            "eff_conc": eff_conc,
+            "started": time.time(),
+            "log_handle": log_handle,
+            "log_path": log_path,
+            "heavy": is_heavy(task),
+        }
+        index += 1
+        tag = "HEAVY" if is_heavy(task) else f"conc={eff_conc}"
+        print(f"[{index}/{total}] START {task.task_id} ({tag})")
+
+    def _harvest_one():
+        """Block until any child exits; return (proc, returncode)."""
+        while True:
+            for proc in list(slots):
+                rc = proc.poll()
+                if rc is not None:
+                    return proc, rc
+            time.sleep(0.5)
+
+    try:
+        while runnable or slots:
+            while runnable and len(slots) < parallel and _admit_ok(runnable[0]):
+                _spawn(runnable.pop(0))
+
+            if not slots:
+                # No admissible task and no slots -- shouldn't normally
+                # happen since runnable is empty when we exit the outer
+                # loop. Defensive bail-out.
+                if not runnable:
+                    break
+                # If we get here, the head of the queue is heavy and at
+                # least one slot is busy. Harvest one to free room.
+                pass
+
+            if not slots:
+                break
+
+            proc, rc = _harvest_one()
+            slot = slots.pop(proc)
+            slot["log_handle"].close()
+            task = slot["task"]
+            command = slot["command"]
+            eff_conc = slot["eff_conc"]
+            started = slot["started"]
+            log_path = slot["log_path"]
+            attempts = [{"returncode": rc, "batch_size": _batch_size(command)}]
+
+            if rc == 0:
+                _write_completed(scope, task, command, attempts, started, eff_conc, parallel)
+                print(f"OK    {task.task_id}  ({time.time()-started:.1f}s)")
+            else:
+                output_tail = ""
+                try:
+                    output_tail = log_path.read_text()[-2000:]
+                except OSError:
+                    pass
+                oom = _oom_text(output_tail)
+                _write_failed_status(scope, task, command, attempts, started, log_path)
+                failed_any = True
+                msg = "OOM" if oom else f"rc={rc}"
+                print(f"FAIL  {task.task_id}  ({msg}; see {log_path})")
+                if not keep_going:
+                    raise RuntimeError(f"failed: {task.task_id}")
+    except (KeyboardInterrupt, RuntimeError) as exc:
+        print(f"\nshutting down ({type(exc).__name__}); terminating {len(slots)} live children...")
+        # Best-effort: record in-flight rows as failed before killing.
+        in_flight = list(slots.items())
+        _shutdown_children(slots, grace=5.0)
+        for proc, slot in in_flight:
+            try:
+                slot["log_handle"].close()
+            except Exception:
+                pass
+            _write_failed_status(
+                scope, slot["task"], slot["command"],
+                [{"returncode": proc.returncode if proc.returncode is not None else -signal.SIGTERM,
+                  "batch_size": _batch_size(slot["command"])}],
+                slot["started"], slot["log_path"],
+            )
+        if isinstance(exc, KeyboardInterrupt):
+            raise SystemExit(130)
+        raise SystemExit(1)
+
+    if failed_any and not keep_going:
+        raise SystemExit(1)
 
 
 def _read_metric_row(result_file):
@@ -830,6 +1073,12 @@ def main():
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-tasks", type=int, default=None)
+    parser.add_argument(
+        "--parallel", type=int, default=1,
+        help="Max concurrent tasks (default 1). Heavy rows and efficiency "
+             "rows always run alone. At --parallel >=2, --deterministic full "
+             "is forced for co-tenant rows and OOM batch-halving is disabled.",
+    )
     parser.add_argument("--smoke-dataset", default="ETTh1")
     parser.add_argument("--smoke-horizon", type=int, default=96)
     parser.add_argument("--smoke-tolerance-mse", type=float, default=0.08)
@@ -852,7 +1101,14 @@ def main():
         print(f"Wrote {_manifest_path(args.scope)} ({len(tasks)} tasks)")
         return
     if args.command == "run":
-        run_tasks(args.scope, tasks, resume=not args.no_resume and not args.force, keep_going=args.keep_going, dry_run=args.dry_run, max_tasks=args.max_tasks)
+        run_tasks(
+            args.scope, tasks,
+            resume=not args.no_resume and not args.force,
+            keep_going=args.keep_going,
+            dry_run=args.dry_run,
+            max_tasks=args.max_tasks,
+            parallel=args.parallel,
+        )
     elif args.command == "collect":
         collect(args.scope)
 

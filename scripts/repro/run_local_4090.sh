@@ -36,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       EXTRA+=("--max-tasks" "$2")
       shift 2
       ;;
+    --parallel)
+      EXTRA+=("--parallel" "$2")
+      shift 2
+      ;;
     --manifest)
       COMMAND="manifest"
       shift

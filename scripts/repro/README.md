@@ -26,8 +26,9 @@ bash scripts/repro/run_local_4090.sh --scope lite-paper --check-stale-results
 # 3. dry-run a single task end-to-end so you see the exact command
 bash scripts/repro/run_local_4090.sh --scope lite-paper --dry-run --max-tasks 1
 
-# 4. start the real run (resumable; SIGINT is safe)
-bash scripts/repro/run_local_4090.sh --scope lite-paper --keep-going
+# 4. start the real run (resumable; SIGINT is safe).
+#    --parallel 4 packs the light rows; heavy rows automatically run alone.
+bash scripts/repro/run_local_4090.sh --scope lite-paper --parallel 4 --keep-going
 
 # 5. collect + gate the smoke row against paper Table 2
 bash scripts/repro/run_local_4090.sh --scope lite-paper --collect
@@ -139,6 +140,108 @@ disables the skip entirely.
 
 ---
 
+## Parallel mode
+
+`--parallel N` (default 1) runs up to N tasks concurrently on the single
+GPU. The scheduler is in `scripts/repro/paper_repro.py` (`_run_parallel`).
+Recommended: `--parallel 4` on a 24GB 4090; drop to 2 if you hit OOMs.
+
+Three correctness guarantees, all enforced by the scheduler:
+
+1. **Heavy rows run alone.** A static blocklist (`HEAVY_ROWS` in
+   `paper_repro.py`) marks combinations like FEDformer / Solar,
+   Crossformer / Traffic / H720, and the Table 5/6 efficiency rows.
+   These get `effective_concurrency=1` automatically and are never
+   admitted while another row is in flight. The current rules:
+
+   ```python
+   {"table": "table5_efficiency"},
+   {"table": "table6_efficiency"},
+   {"model": "FEDformer", "dataset": ("Solar", "Traffic", "Electricity")},
+   {"model": "Crossformer", "dataset": ("Solar", "Traffic", "Electricity"),
+    "horizon": (336, 720)},
+   {"model": "Pathformer", "dataset": ("Traffic", "Electricity"),
+    "horizon": (336, 720)},
+   {"dataset": ("Traffic", "Electricity"), "horizon": 720, "seq_len": 512},
+   ```
+
+   If you discover a new OOM pattern, add a rule here. No silent fallback
+   logic exists; the only response to OOM in parallel mode is a hard fail.
+
+2. **Bit-faithful numerics under contention.** When a row's
+   `effective_concurrency >= 2`, the runner rewrites `--deterministic`
+   to `full`. That sets `cudnn.deterministic=True`,
+   `cudnn.benchmark=False`, `cudnn.enabled=False` in the child
+   (`ts_benchmark/utils/random_utils.py:18-31`), so parallel-trained
+   results are bit-equivalent to a clean-GPU sequential run. Slight
+   slowdown (5-15%); paper-faithful claim preserved.
+
+3. **No OOM batch-halving in parallel.** Sequential mode (`--parallel 1`)
+   keeps the paper's stated bs=64 → floor 8 halving policy. Parallel
+   mode disables it entirely: an OOM row is `failed`, no metadata is
+   written, and `--resume` will re-run it on the next invocation. The
+   recovery path for a failed parallel row is to re-run with
+   `--parallel 1`.
+
+### Logs
+
+Each child writes its stdout to `repro_results/<scope>/logs/<task_id>.log`
+in real time (line-buffered). The parent prints compact one-liners:
+
+```text
+parallel=4; 207 runnable tasks
+[1/207] START table2_srsnet_ETTh1_H96_SRSNet_s2021 (conc=4)
+[2/207] START table2_srsnet_ETTh2_H96_SRSNet_s2021 (conc=4)
+...
+OK    table2_srsnet_ETTh1_H96_SRSNet_s2021  (612.3s)
+[5/207] START table4_ablation_ETTh1_H96_SRSNet_NoSP_s2021 (conc=4)
+...
+```
+
+### Resume across modes
+
+Switching `--parallel` values between runs is safe and reuses
+previously completed rows:
+
+- The `requested_config_hash` is computed from `task.command`, which
+  never contains the injected `--deterministic full` (that's a
+  runtime-only rewrite). So the resume identity is stable across
+  `--parallel` values.
+- This means: if you run `--parallel 1` to completion of 100 rows then
+  switch to `--parallel 4`, those 100 rows are skipped. They were
+  trained with the official default `--deterministic efficient`
+  (cudnn nondeterminism *allowed* on a clean single-tenant GPU). New
+  rows at `--parallel 4` are trained with `--deterministic full`
+  (cudnn nondeterminism *forbidden*, bit-equivalent under contention).
+- The two settings produce numbers that are extremely close in
+  practice (cudnn nondeterminism contributes far below paper-reported
+  precision), but the *result set is technically mixed*. If you want
+  a strictly homogeneous set, run a single mode end-to-end or use
+  `--force` when switching.
+- Metadata records the actual `deterministic_used` and
+  `effective_concurrency` per row, so the audit trail tells you which
+  rows were trained under which setting.
+
+### Ctrl+C and orphan safety
+
+Children inherit the parent's process group. Terminal Ctrl+C reaches
+every child simultaneously. The parent also explicitly broadcasts
+SIGTERM (5s grace) then SIGKILL on `KeyboardInterrupt`/`RuntimeError`
+so non-terminal stops (`kill <pid>`, `timeout` wrapper, systemd) also
+leave no orphans. Verify with `ps -ef | grep run_benchmark.py` and
+`nvidia-smi` after any abnormal exit.
+
+### Tuning N
+
+- `--parallel 1`: current default, paper-mode sequential with OOM halving.
+- `--parallel 2`: safe starter on any GPU >=12GB.
+- `--parallel 4`: recommended on 24GB 4090. The static blocklist covers
+  the known-heavy combos; light rows pack fine.
+- `--parallel >=6`: only with an empty blocklist hit rate. Provoke OOMs
+  on light rows; you'll need to extend `HEAVY_ROWS` or back off.
+
+---
+
 ## Metric space
 
 Reported `mse` / `mae` in `summary.csv` are
@@ -247,6 +350,18 @@ horizon split). The `result_file` field in metadata points there.
   `full-paper`. If you need to honor an official script's batch_size
   exactly (e.g. to match the original repo's behavior), use
   `--scope main-compat`.
+- **`--parallel N` is opt-in.** Default stays at 1 so the sequential
+  paper-mode OOM-halving behavior is preserved. At N>=2, OOM halving
+  is disabled and the row fails loud; re-run failed rows at
+  `--parallel 1` to recover them.
+- **Switching `--parallel` values does not invalidate completed rows.**
+  The runtime `--deterministic full` injection is not part of the
+  resume identity hash, so previously completed rows are reused.
+  Result: the set can be mixed (some rows trained at `efficient`, some
+  at `full`). In practice the numbers are nearly identical; if you
+  want a homogeneous set, run a single mode end-to-end or use
+  `--force`. The `deterministic_used` field in each row's metadata
+  records which setting was actually used.
 
 ---
 
@@ -260,8 +375,12 @@ horizon split). The `result_file` field in metadata points there.
 6. `bash scripts/repro/run_local_4090.sh --scope lite-paper --dry-run --max-tasks 1` and read the printed command.
 7. Run a single real task: `--scope lite-paper --max-tasks 1` (no `--dry-run`).
 8. `--collect` then `--smoke-check`. Only proceed past this point if smoke passes.
-9. Launch the real run: `--scope lite-paper --keep-going`. Tail `repro_results/lite-paper/logs/`.
-10. After lite passes, repeat with `--scope full-paper` if budget allows.
+9. Launch the real run: `--scope lite-paper --parallel 4 --keep-going`. Tail `repro_results/lite-paper/logs/`.
+10. After lite passes, repeat with `--scope full-paper --parallel 4 --keep-going` if budget allows.
+
+> If you hit unexpected OOMs at `--parallel 4`, drop to `--parallel 2`,
+> let resume pick up the failed rows, and add the offending
+> `(model, dataset, horizon)` to `HEAVY_ROWS` in `paper_repro.py`.
 
 ---
 
