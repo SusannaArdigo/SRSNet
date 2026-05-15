@@ -543,12 +543,335 @@ def gen_baselines_paper_delta(baseline_rows):
         print(f"    {m:15s}: mean={mean:+6.2f}%  abs={abs_mean:5.2f}%  n={len(vals)}")
 
 
+# ---------------------------------------------------------------------------
+# Extensions scope helpers (A+F+B+D contributions)
+# ---------------------------------------------------------------------------
+EXTENSIONS_SUMMARY = ROOT / "repro_results" / "extensions" / "summary.csv"
+
+
+def load_extensions_summary():
+    """Read repro_results/extensions/summary.csv + test_reports."""
+    if not EXTENSIONS_SUMMARY.exists():
+        return []
+    rows = []
+    local_results = ROOT / "result" / "repro" / "extensions"
+    with open(EXTENSIONS_SUMMARY) as f:
+        for r in csv.DictReader(f):
+            if r["status"] != "completed":
+                continue
+            task_dir = local_results / r["table"] / r["task_id"]
+            if not task_dir.exists():
+                continue
+            reports = list(task_dir.glob("test_report*.csv"))
+            if not reports:
+                continue
+            # Pick the most recent test_report (in case of retries).
+            reports.sort(key=lambda p: p.stat().st_mtime)
+            metrics = {}
+            with open(reports[-1]) as rf:
+                next(rf)
+                for line in rf:
+                    parts = line.rstrip("\n").rsplit(",", 1)
+                    if len(parts) != 2:
+                        continue
+                    name = parts[0].split(",")[-1].strip().strip('"')
+                    try:
+                        val = float(parts[1])
+                    except ValueError:
+                        continue
+                    metrics[name] = val
+            r["mse"] = str(metrics.get("mse_norm", ""))
+            r["mae"] = str(metrics.get("mae_norm", ""))
+            rows.append(r)
+    return rows
+
+
+def _baseline_srsnet_cell(srsnet_rows, ds, h):
+    """Look up the original SRSNet baseline cell from the lite-paper run."""
+    for r in srsnet_rows:
+        if (
+            r["table"] == "table2_srsnet"
+            and r["model"] == "SRSNet"
+            and r["dataset"] == ds
+            and int(r["horizon"]) == h
+        ):
+            return (to_float(r["mse"]), to_float(r["mae"]))
+    return (None, None)
+
+
+def gen_tab2_extension(srsnet_rows, ext_rows):
+    """Tab.2 extension: SRSNet (baseline) + GAF + DDA + MSP across 4 ETT x 4 H."""
+    out_path = OUT_DIR / "tab2_extension_results.csv"
+    variants = ["SRSNet", "SRSNet_GAF", "SRSNet_DDA", "SRSNet_MSP"]
+    datasets = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
+    horizons = [96, 192, 336, 720]
+
+    cells = {}
+    # Baseline rows come from the original lite-paper SRSNet run.
+    for d in datasets:
+        for h in horizons:
+            cells[("SRSNet", d, h)] = _baseline_srsnet_cell(srsnet_rows, d, h)
+    for r in ext_rows:
+        if r["table"] == "table2_extension":
+            cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
+                to_float(r["mse"]),
+                to_float(r["mae"]),
+            )
+
+    header = ["dataset", "horizon"]
+    for v in variants:
+        header += [f"{v}_MSE", f"{v}_MAE"]
+    for v in variants[1:]:
+        header.append(f"{v}_vs_SRSNet_pct")
+    lines = [",".join(header)]
+
+    avgs = {v: [] for v in variants}
+    for ds in datasets:
+        for h in horizons:
+            row = [ds, str(h)]
+            base = cells.get(("SRSNet", ds, h), (None, None))
+            for v in variants:
+                cell = cells.get((v, ds, h), (None, None))
+                row += [fmt(cell[0]), fmt(cell[1])]
+                if cell[0] is not None:
+                    avgs[v].append(cell)
+            for v in variants[1:]:
+                cell = cells.get((v, ds, h), (None, None))
+                d = delta_pct(cell[0], base[0])
+                row.append(f"{d:+.2f}" if d is not None else "")
+            lines.append(",".join(row))
+
+    avg_row = ["AVERAGE", ""]
+    base_avg = None
+    for v in variants:
+        if avgs[v]:
+            m = sum(c[0] for c in avgs[v]) / len(avgs[v])
+            e = sum(c[1] for c in avgs[v]) / len(avgs[v])
+            avg_row += [fmt(m), fmt(e)]
+            if v == "SRSNet":
+                base_avg = m
+        else:
+            avg_row += ["", ""]
+    for v in variants[1:]:
+        if avgs[v] and base_avg is not None:
+            m = sum(c[0] for c in avgs[v]) / len(avgs[v])
+            d = delta_pct(m, base_avg)
+            avg_row.append(f"{d:+.2f}" if d is not None else "")
+        else:
+            avg_row.append("")
+    lines.append(",".join(avg_row))
+
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  ✅ {out_path.name}: {len(variants)} variants x {len(datasets)*len(horizons)} cells")
+
+
+def gen_tab4_extension(srsnet_rows, ext_rows):
+    """Tab.4 extension: SRSNet Full + NoSRS/NoSP/NoDR/NoAF + GAF + RandomSRS."""
+    out_path = OUT_DIR / "tab4_extension_ablation.csv"
+    datasets = ["ETTh1", "ETTm2"]
+    horizons = [96, 192, 336, 720]
+    variants = [
+        "SRSNet",
+        "SRSNet_NoSRS",
+        "SRSNet_NoSP",
+        "SRSNet_NoDR",
+        "SRSNet_NoAF",
+        "SRSNet_GAF",        # extension A
+        "SRSNet_RandomSRS",  # extension F
+    ]
+
+    cells = {}
+    # Paper ablation rows from lite-paper.
+    for r in srsnet_rows:
+        if r["table"] == "table4_ablation":
+            cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
+                to_float(r["mse"]),
+                to_float(r["mae"]),
+            )
+    # Extension rows from extensions scope.
+    for r in ext_rows:
+        if r["table"] == "table4_extension":
+            cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
+                to_float(r["mse"]),
+                to_float(r["mae"]),
+            )
+
+    header = ["dataset", "horizon"] + [f"{v}_MSE" for v in variants]
+    lines = [",".join(header)]
+    avgs = {v: [] for v in variants}
+    for ds in datasets:
+        for h in horizons:
+            row = [ds, str(h)]
+            for v in variants:
+                cell = cells.get((v, ds, h))
+                row.append(fmt(cell[0]) if cell and cell[0] is not None else "")
+                if cell and cell[0] is not None:
+                    avgs[v].append(cell[0])
+            lines.append(",".join(row))
+    avg_row = ["AVERAGE", ""]
+    for v in variants:
+        if avgs[v]:
+            avg_row.append(fmt(sum(avgs[v]) / len(avgs[v])))
+        else:
+            avg_row.append("")
+    lines.append(",".join(avg_row))
+    out_path.write_text("\n".join(lines) + "\n")
+    print(
+        f"  ✅ {out_path.name}: {len(variants)} variants x "
+        f"{len(datasets)*len(horizons)} cells"
+    )
+
+
+def gen_tab3_extension(srsnet_rows, ext_rows):
+    """Tab.3 extension: plug-in study with SRSNet_DDA on top of MLP base."""
+    out_path = OUT_DIR / "tab3_extension_plugin.csv"
+    datasets = ["ETTh1", "ETTm2"]
+    horizons = [96, 192, 336, 720]
+
+    # Base = SRSNet_NoSRS (== MLP only) from lite-paper.
+    base_cells = {}
+    for r in srsnet_rows:
+        if r["table"] == "table4_ablation" and r["model"] == "SRSNet_NoSRS":
+            base_cells[(r["dataset"], int(r["horizon"]))] = to_float(r["mse"])
+
+    # Original SRS plug-in (SRSNet) and DDA plug-in.
+    srs_cells = {}
+    for r in srsnet_rows:
+        if r["table"] == "table4_ablation" and r["model"] == "SRSNet":
+            srs_cells[(r["dataset"], int(r["horizon"]))] = to_float(r["mse"])
+
+    dda_cells = {}
+    for r in ext_rows:
+        if r["table"] == "table3_extension" and r["model"] == "SRSNet_DDA":
+            dda_cells[(r["dataset"], int(r["horizon"]))] = to_float(r["mse"])
+
+    header = [
+        "dataset",
+        "horizon",
+        "base_NoSRS_MSE",
+        "SRS_plugin_MSE",
+        "SRS_plugin_delta_pct",
+        "SRS_plugin_improved",
+        "SRS_DDA_plugin_MSE",
+        "SRS_DDA_plugin_delta_pct",
+        "SRS_DDA_plugin_improved",
+    ]
+    lines = [",".join(header)]
+    for ds in datasets:
+        for h in horizons:
+            base = base_cells.get((ds, h))
+            srs = srs_cells.get((ds, h))
+            dda = dda_cells.get((ds, h))
+            row = [ds, str(h), fmt(base) if base else ""]
+            for plus in (srs, dda):
+                if base and plus:
+                    d = delta_pct(plus, base)
+                    improved = "YES" if d is not None and d < 0 else "no"
+                else:
+                    d = None
+                    improved = ""
+                row += [
+                    fmt(plus) if plus else "",
+                    f"{d:+.2f}" if d is not None else "",
+                    improved,
+                ]
+            lines.append(",".join(row))
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  ✅ {out_path.name}: 8 pairs (NoSRS vs SRS vs SRS_DDA)")
+
+
+def gen_extensions_summary(srsnet_rows, ext_rows):
+    """High-level recap of which extension improves over baseline SRSNet."""
+    out_path = OUT_DIR / "extensions_summary.csv"
+
+    base_cells = {}
+    for d in ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]:
+        for h in [96, 192, 336, 720]:
+            base_cells[(d, h)] = _baseline_srsnet_cell(srsnet_rows, d, h)
+
+    out_rows = []
+    for variant in ["SRSNet_GAF", "SRSNet_DDA", "SRSNet_MSP"]:
+        improvements = []
+        deltas = []
+        n = 0
+        for r in ext_rows:
+            if r["table"] != "table2_extension" or r["model"] != variant:
+                continue
+            ours = to_float(r["mse"])
+            base = base_cells.get((r["dataset"], int(r["horizon"])))[0]
+            if ours is None or base is None:
+                continue
+            d = delta_pct(ours, base)
+            deltas.append(d)
+            n += 1
+            if d < 0:
+                improvements.append(1)
+            else:
+                improvements.append(0)
+        if n:
+            mean_d = sum(deltas) / n
+            n_improved = sum(improvements)
+            out_rows.append((variant, n_improved, n, mean_d))
+
+    # RandomSRS vs SRSNet on Tab.4 ablation (selectivity sanity check).
+    n_random_better = 0
+    n_random = 0
+    deltas_random = []
+    for r in ext_rows:
+        if r["table"] != "table4_extension" or r["model"] != "SRSNet_RandomSRS":
+            continue
+        ours = to_float(r["mse"])
+        # baseline = SRSNet Full from Tab.4 ablation in lite-paper
+        baseline = None
+        for s in srsnet_rows:
+            if (
+                s["table"] == "table4_ablation"
+                and s["model"] == "SRSNet"
+                and s["dataset"] == r["dataset"]
+                and int(s["horizon"]) == int(r["horizon"])
+            ):
+                baseline = to_float(s["mse"])
+                break
+        if ours is None or baseline is None:
+            continue
+        d = delta_pct(ours, baseline)
+        deltas_random.append(d)
+        n_random += 1
+        if d < 0:
+            n_random_better += 1
+    if n_random:
+        mean_d = sum(deltas_random) / n_random
+        out_rows.append(
+            ("SRSNet_RandomSRS_vs_Full", n_random_better, n_random, mean_d)
+        )
+
+    lines = ["variant,n_better_than_baseline,n_total,mean_delta_mse_pct,verdict"]
+    for variant, n_b, n_t, mean_d in out_rows:
+        if variant == "SRSNet_RandomSRS_vs_Full":
+            verdict = (
+                "selectivity_matters" if mean_d > 1
+                else "selectivity_does_not_matter"
+            )
+        else:
+            verdict = (
+                "improves_baseline" if mean_d < -0.5
+                else ("matches_baseline" if abs(mean_d) <= 1 else "degrades_baseline")
+            )
+        lines.append(
+            f"{variant},{n_b},{n_t},{mean_d:+.2f},{verdict}"
+        )
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"  ✅ {out_path.name}: {len(out_rows)} variant verdicts")
+
+
 def main():
     OUT_DIR.mkdir(exist_ok=True)
     rows = load_summary()
     print(f"Loaded {len(rows)} completed rows from lite-paper summary.csv")
     baseline_rows = load_baselines_summary()
     print(f"Loaded {len(baseline_rows)} completed rows from main-compat summary.csv")
+    ext_rows = load_extensions_summary()
+    print(f"Loaded {len(ext_rows)} completed rows from extensions summary.csv")
     print()
     srsnet_cells = gen_tab2(rows)
     gen_tab3(rows)
@@ -559,6 +882,13 @@ def main():
         print()
         gen_tab2_full(rows, baseline_rows)
         gen_baselines_paper_delta(baseline_rows)
+    if ext_rows:
+        print()
+        print("=== Extensions tables (A+F+B+D contributions) ===")
+        gen_tab2_extension(rows, ext_rows)
+        gen_tab3_extension(rows, ext_rows)
+        gen_tab4_extension(rows, ext_rows)
+        gen_extensions_summary(rows, ext_rows)
     print()
     print("✅ Done.")
 
