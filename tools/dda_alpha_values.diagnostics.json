@@ -1,0 +1,30 @@
+{
+  "ETTh1": {
+    "alpha_dda": 3.0044,
+    "channels": 7,
+    "csv": "/Users/dominikpanzarella/Downloads/forecasting/ETTh1.csv",
+    "rows": 17420,
+    "seasonality_strength": 123.6436
+  },
+  "ETTh2": {
+    "alpha_dda": 3.0831,
+    "channels": 7,
+    "csv": "/Users/dominikpanzarella/Downloads/forecasting/ETTh2.csv",
+    "rows": 17420,
+    "seasonality_strength": 169.4182
+  },
+  "ETTm1": {
+    "alpha_dda": 3.2706,
+    "channels": 7,
+    "csv": "/Users/dominikpanzarella/Downloads/forecasting/ETTm1.csv",
+    "rows": 69680,
+    "seasonality_strength": 358.6591
+  },
+  "ETTm2": {
+    "alpha_dda": 3.3635,
+    "channels": 7,
+    "csv": "/Users/dominikpanzarella/Downloads/forecasting/ETTm2.csv",
+    "rows": 69680,
+    "seasonality_strength": 520.147
+  }
+}

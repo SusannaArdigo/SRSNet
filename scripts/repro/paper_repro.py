@@ -27,6 +27,29 @@ PAPER_SRSNET_SEEDS = [2021, 2022, 2023, 2024, 2025]
 PAPER_BATCH_FLOOR = 8
 METRIC_SPACE = "mse_norm/mae_norm after model inverse_transform, normalized by the evaluator train split scaler"
 
+# --- "extensions" scope ----------------------------------------------------
+# Reproduction-as-contribution: 4 new SRS variants implemented in
+# ts_benchmark.baselines.srs_paper.extensions.  Each tackles a Future Work
+# or Limitation from Sec. 6 of the SRSNet paper.
+EXTENSION_ETT_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
+EXTENSION_ABLATION_DATASETS = ["ETTh1", "ETTm2"]  # match Tab.3/Tab.4 paper scope
+EXTENSION_TAB2_VARIANTS = [
+    "SRSNet_GAF",   # A. Gated Adaptive Fusion (FW#3 + L4)
+    "SRSNet_DDA",   # B. Data-driven alpha init (L4)
+    "SRSNet_MSP",   # D. Multi-scale Selective Patching (FW#1)
+]
+EXTENSION_TAB4_VARIANTS = [
+    "SRSNet_GAF",       # ablation of AF (vs paper NoAF)
+    "SRSNet_RandomSRS", # F. random patches (selectivity sanity check)
+]
+EXTENSION_TAB3_VARIANTS = [
+    "SRSNet_DDA",   # check if DDA restores plug-in benefit
+]
+
+# Per-dataset alpha precomputed by tools/compute_dda_alpha.py.  Loaded
+# lazily so the file is optional at import time.
+DDA_ALPHA_PATH = ROOT / "tools" / "dda_alpha_values.json"
+
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
 # Each rule is a dict; a task matches a rule if ALL listed fields equal the
 # rule's value. Tuple values mean "any of these". Add a new entry here when
@@ -266,7 +289,7 @@ def _horizon(tokens):
         return None
 
 
-def _paper_hyper_params(tokens, horizon, seq_len=None, paper_mode=True):
+def _paper_hyper_params(tokens, horizon, seq_len=None, paper_mode=True, overrides=None):
     params = _json_option(tokens, "--model-hyper-params")
     params["horizon"] = horizon
     if paper_mode:
@@ -274,10 +297,12 @@ def _paper_hyper_params(tokens, horizon, seq_len=None, paper_mode=True):
         params["train_drop_last"] = False
     if seq_len is not None:
         params["seq_len"] = seq_len
+    if overrides:
+        params.update(overrides)
     return params
 
 
-def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True):
+def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True, hyper_overrides=None):
     horizon = _horizon(tokens)
     if horizon is None:
         raise ValueError("cannot infer horizon")
@@ -303,12 +328,14 @@ def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_le
         cmd = _remove_option(cmd, "--adapter")
     else:
         cmd = _set_option(cmd, "--adapter", adapter)
-    params = _paper_hyper_params(cmd, horizon, seq_len=seq_len, paper_mode=paper_mode)
+    params = _paper_hyper_params(
+        cmd, horizon, seq_len=seq_len, paper_mode=paper_mode, overrides=hyper_overrides
+    )
     cmd = _set_option(cmd, "--model-hyper-params", json.dumps(params, sort_keys=True))
     return cmd, save_path
 
 
-def _task_from_tokens(tokens, *, scope, table, dataset, model, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True):
+def _task_from_tokens(tokens, *, scope, table, dataset, model, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True, hyper_overrides=None):
     horizon = _horizon(tokens)
     suffix = []
     if seed is not None:
@@ -330,11 +357,12 @@ def _task_from_tokens(tokens, *, scope, table, dataset, model, gpu, seed=None, s
         model_name=model_name,
         adapter=adapter,
         paper_mode=paper_mode,
+        hyper_overrides=hyper_overrides,
     )
     return Task(task_id, table, dataset, horizon, model_name.split(".")[-1] if model_name else model, cmd, save_path, seed, seq_len, oom_retry=paper_mode)
 
 
-def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq_lens=(None,), model_name=None, adapter=None):
+def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq_lens=(None,), model_name=None, adapter=None, hyper_overrides=None):
     tasks = []
     entries = _read_script_commands(dataset, model)
     display_model = model_name.split(".")[-1] if model_name else model
@@ -382,6 +410,7 @@ def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq
                             model_name=model_name,
                             adapter=effective_adapter,
                             paper_mode=paper_mode,
+                            hyper_overrides=hyper_overrides,
                         )
                     )
                 except (ValueError, json.JSONDecodeError) as exc:
@@ -401,12 +430,120 @@ def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq
     return tasks
 
 
+def _load_dda_alpha_map():
+    """Return {dataset: alpha} computed offline by tools/compute_dda_alpha.py.
+
+    Returns an empty dict if the file is missing; callers must handle the
+    fallback (typically by falling back to the script's default alpha).
+    """
+    if not DDA_ALPHA_PATH.exists():
+        return {}
+    try:
+        return json.loads(DDA_ALPHA_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _extension_tab2_tasks(scope, gpu):
+    """Tab.2 extension: GAF / DDA / MSP on 4 ETT x 4 horizons."""
+    tasks = []
+    dda_alpha = _load_dda_alpha_map()
+    for variant in EXTENSION_TAB2_VARIANTS:
+        for dataset in EXTENSION_ETT_DATASETS:
+            overrides = None
+            if variant == "SRSNet_DDA":
+                alpha = dda_alpha.get(dataset)
+                if alpha is None:
+                    # Without a precomputed value DDA collapses to the
+                    # script default; emit a placeholder so the gap is
+                    # visible in summaries.
+                    for horizon in PAPER_HORIZONS:
+                        tasks.append(
+                            Task(
+                                f"table2_extension_{dataset}_H{horizon}_{variant}_missing_alpha",
+                                "table2_extension",
+                                dataset,
+                                horizon,
+                                variant,
+                                [],
+                                "",
+                                status="reference-only",
+                                note=(
+                                    f"DDA alpha for {dataset} missing; run "
+                                    "tools/compute_dda_alpha.py first."
+                                ),
+                            )
+                        )
+                    continue
+                overrides = {"alpha": float(alpha)}
+            tasks.extend(
+                _official_tasks_for(
+                    dataset,
+                    "SRSNet",
+                    scope=scope,
+                    table="table2_extension",
+                    gpu=gpu,
+                    model_name=f"srs_paper.{variant}",
+                    adapter=None,
+                    hyper_overrides=overrides,
+                )
+            )
+    return tasks
+
+
+def _extension_tab4_tasks(scope, gpu):
+    """Tab.4 extension: GAF (vs NoAF) + RandomSRS on ETTh1+ETTm2."""
+    tasks = []
+    for variant in EXTENSION_TAB4_VARIANTS:
+        for dataset in EXTENSION_ABLATION_DATASETS:
+            tasks.extend(
+                _official_tasks_for(
+                    dataset,
+                    "SRSNet",
+                    scope=scope,
+                    table="table4_extension",
+                    gpu=gpu,
+                    model_name=f"srs_paper.{variant}",
+                    adapter=None,
+                )
+            )
+    return tasks
+
+
+def _extension_tab3_tasks(scope, gpu):
+    """Tab.3 extension: DDA used as plug-in (SRSNet_DDA vs SRSNet_NoSRS)."""
+    tasks = []
+    dda_alpha = _load_dda_alpha_map()
+    for dataset in EXTENSION_ABLATION_DATASETS:
+        alpha = dda_alpha.get(dataset)
+        overrides = {"alpha": float(alpha)} if alpha is not None else None
+        tasks.extend(
+            _official_tasks_for(
+                dataset,
+                "SRSNet",
+                scope=scope,
+                table="table3_extension",
+                gpu=gpu,
+                model_name="srs_paper.SRSNet_DDA",
+                adapter=None,
+                hyper_overrides=overrides,
+            )
+        )
+    return tasks
+
+
 def build_tasks(scope, gpu):
     tasks = []
     if scope == "main-compat":
         for dataset in PAPER_DATASETS:
             for model in sorted(PAPER_BASELINES):
                 tasks.extend(_official_tasks_for(dataset, model, scope=scope, table="main_compat", gpu=gpu))
+        return tasks
+
+    if scope == "extensions":
+        tasks.extend(_extension_tab2_tasks(scope, gpu))
+        tasks.extend(_extension_tab4_tasks(scope, gpu))
+        tasks.extend(_extension_tab3_tasks(scope, gpu))
         return tasks
 
     srs_seeds = PAPER_SRSNET_SEEDS if scope == "full-paper" else (2021,)
@@ -1097,7 +1234,7 @@ def smoke_check(scope, dataset, horizon, tolerance_mse, tolerance_mae):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["manifest", "run", "collect", "dry-coverage", "check-data", "check-stale-results", "smoke-check"])
-    parser.add_argument("--scope", default="lite-paper", choices=["lite-paper", "full-paper", "main-compat"])
+    parser.add_argument("--scope", default="lite-paper", choices=["lite-paper", "full-paper", "main-compat", "extensions"])
     parser.add_argument("--gpu", default=os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--force", action="store_true")
