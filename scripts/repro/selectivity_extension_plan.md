@@ -565,3 +565,359 @@ Go ahead with this plan, but gate the work on the checkpoint check (item 1)
 before writing any code for Experiment 1, and adopt items 3 (identity shuffle
 default), 4 (periodic = PatchTST framing), and 5 (drop or refine verdict bins)
 before generating any report tables.
+
+## Future Constructive Extensions (Post-Selectivity Audit)
+
+The selectivity-controls study above is a *negative-control* study: it tests
+whether the paper's learned scorer is necessary, but it does not propose a
+replacement.  Once the small-grid Random results are in, the report would be
+strengthened by pairing the negative result with at least one *constructive*
+extension that maps explicitly to a Future Work entry from Sec. 6 of the
+SRSNet paper.
+
+The three candidates below were selected because each addresses a distinct
+paper Future Work / Limitation pair, and each is small enough to implement
+on top of the existing `selectivity-controls` scaffolding (same datasets,
+same horizons, 5 seeds, same `paper_repro.py` runner).
+
+A summary table is provided at the end; the per-extension blocks below
+expand the rationale and design.
+
+### Extension A: TASP -- Time-Aware Selective Patching
+
+**Paper claims addressed**
+
+* FW#1 -- *"environment-aware mechanism to perceive the patch-wise data
+  distributions and patterns more explicitly".*
+* L3 -- *"we can only ensure the selected patches are useful for forecasting,
+  but not all of them are interpretable".*
+
+**Motivation**
+
+The paper's `_select` is a two-layer MLP over the raw patch values.  Its
+output is a vector of scores with no a-priori meaning.  TASP replaces that
+MLP with a scorer over a small set of *engineered, interpretable* per-window
+statistics:
+
+* dominant FFT magnitude in the seasonal band (hourly: lag 24; 15-min: lag 96)
+* lag-1 autocorrelation
+* within-window variance
+* trend slope (linear fit residual)
+
+The scorer that maps the four-feature vector to a per-candidate score is
+itself a tiny MLP (4 -> 16 -> 1).  Total scorer params drop from
+`O(patch_len * hidden_size * patch_num)` to `O(80)`, so any improvement
+cannot be attributed to extra capacity.
+
+**Design sketch**
+
+```python
+class SRSTimeAware(SRS):
+    """Scorer over engineered features instead of raw patch values."""
+
+    N_FEATURES = 4
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Replace the learned scorer with a tiny MLP over interpretable features.
+        self.scorer_select = nn.Sequential(
+            nn.Linear(self.N_FEATURES, 16),
+            nn.ReLU(),
+            nn.Linear(16, self.patch_num),
+        )
+
+    @staticmethod
+    def _window_features(x_rec):
+        """x_rec: [B, C, candidate_num, patch_size] -> [B, C, candidate_num, 4]."""
+        spec = torch.fft.rfft(x_rec, dim=-1).abs()
+        dominant = spec[..., 1:].max(dim=-1).values
+        mean = x_rec.mean(dim=-1, keepdim=True)
+        var = x_rec.var(dim=-1, unbiased=False)
+        # Lag-1 autocorrelation via correlation of (x[1:] - mean) and (x[:-1] - mean).
+        x_centered = x_rec - mean
+        ac1 = (
+            (x_centered[..., 1:] * x_centered[..., :-1]).sum(dim=-1)
+            / (x_centered.pow(2).sum(dim=-1) + 1e-8)
+        )
+        # Trend slope: residual of a linear least-squares fit over the window.
+        t = torch.arange(x_rec.shape[-1], device=x_rec.device, dtype=x_rec.dtype)
+        t_c = t - t.mean()
+        denom = (t_c * t_c).sum() + 1e-8
+        slope = ((x_rec - mean) * t_c).sum(dim=-1) / denom
+        return torch.stack([dominant, ac1, var, slope], dim=-1)
+
+    def _select(self, x_rec):
+        feats = self._window_features(x_rec)
+        scores = self.scorer_select(feats)  # [B, C, candidates, patch_num]
+        # ...remaining gather logic mirrors the parent _select unchanged.
+```
+
+**Why this is a contribution beyond `SRSRandomSP`**
+
+* It proposes a *replacement* for the learned scorer, not just an ablation.
+* The selected patches are now traceable to a small set of named features.
+  A plot of `which feature drove the top score` is a real interpretability
+  artifact, not a post-hoc rationalization.
+* If TASP matches SRSNet MSE within the seed-level std band, that is a
+  stronger statement than the Random result alone: not only does the
+  learned MLP not help, but a transparent four-feature scorer suffices.
+
+**Risks / pitfalls**
+
+* The feature set is opinionated.  Reviewers may ask why these four and not
+  others.  Honest answer: they are common time-series summary statistics;
+  no claim that this is the *best* engineered set.
+* If TASP is clearly worse than SRSNet, the writeup must say so.  Do not
+  describe TASP as "interpretable so worse is fine".  Either it works or
+  it does not, and the result either way is informative.
+* RNG-free, but the linear-fit trend slope is sensitive to outliers.
+  Mention this as a known limitation.
+
+**Cost estimate**
+
+* Code: roughly 100 LOC for the layer + wrapper + registration.
+* Compute: 60 retrained tasks on the small grid
+  (2 datasets x 2 horizons x 5 seeds x 3 variants where 2 of the 3 are
+  baseline SRSNet and SRSNet_RandomSP from the existing run, so net new
+  tasks are 20).  About 1 to 2 GPU-hours on a single 4090.
+
+### Extension B: Hypernet-AF -- Hypernet Adaptive Fusion
+
+**Paper claims addressed**
+
+* FW#3 -- *"more efficient update mechanism for `alpha` deserves exploration".*
+* L4 -- *"the initialization of the weights `alpha` seems to be important".*
+
+**Motivation**
+
+SRSNet's adaptive fusion uses a free parameter `alpha` of shape
+`[patch_num, d_model]` that is shared across the entire batch and updated
+only via the prediction-head gradient.  Two issues stand out:
+
+1. With the script-mode default `alpha = 3.5`, `sigmoid(alpha) = 0.97`, so
+   the reconstruction view contributes only about 3% of the embedding.
+   This is the regime the DDA experiment lived in -- effectively a no-op.
+2. The fusion weight does not depend on the input.  Different batches with
+   very different stationarity / seasonality use the same fusion ratio.
+
+Hypernet-AF replaces the free `alpha` parameter with a tiny hypernet that
+maps a batch-level context summary to a per-patch, per-feature `alpha`
+tensor.  Crucially, the hypernet has very few parameters compared with the
+GAF gating MLP (which was capacity-confounded).
+
+**Design sketch**
+
+```python
+class SRSHypernetAF(SRS):
+    """Replace the learned alpha tensor with a hypernet over batch context."""
+
+    def __init__(self, *args, hyper_hidden=8, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Strip the free alpha parameter and replace with a 2-layer hypernet
+        # over a low-dim batch context.
+        del self.alpha
+        self.context_proj = nn.Linear(self.value_embedding_org.out_features, hyper_hidden)
+        self.hyper = nn.Linear(hyper_hidden, self.patch_num * self.value_embedding_org.out_features)
+        # Init the hypernet output bias so that sigmoid(alpha) ~ 0.95 at step 0,
+        # matching the paper's default 3.5 initialization and keeping a vanilla-
+        # preserving start.
+        nn.init.zeros_(self.context_proj.weight)
+        nn.init.zeros_(self.context_proj.bias)
+        nn.init.zeros_(self.hyper.weight)
+        nn.init.constant_(self.hyper.bias, 3.5)
+
+    def forward(self, x):
+        n_vars = x.shape[1]
+        x = self.padding_patch_layer(x)
+        rec = self._rec_view(x)
+        orig = self._origin_view(x)
+        e_orig = self.value_embedding_org(orig)
+        e_rec = self.value_embedding_rec(rec)
+        # Context summary: mean over batch+variables+patches of e_orig.
+        ctx = e_orig.mean(dim=(0, 1)).mean(dim=0)  # [d_model]
+        h = torch.relu(self.context_proj(ctx))
+        alpha = self.hyper(h).view(self.patch_num, e_orig.shape[-1])
+        weight = torch.sigmoid(alpha)
+        embedding = weight * e_orig + (1 - weight) * e_rec
+        if self.pos:
+            embedding = embedding + self.position_embedding(orig)
+        return self.dropout(embedding), n_vars
+```
+
+**Why this is a contribution beyond GAF**
+
+* Hypernet-AF is intentionally smaller than the GAF gating MLP that the
+  earlier extension set proposed.  The number of new parameters is
+  `d_model * hyper_hidden + hyper_hidden * patch_num * d_model`, with
+  `hyper_hidden = 8`.  For typical ETT configurations this is on the
+  order of 10k parameters, comparable to the free `alpha` tensor it
+  replaces.
+* The zero-init of the hypernet weights combined with bias = 3.5 means
+  the model starts behaving exactly like vanilla SRSNet at step 0.  Any
+  improvement during training can only come from the *dynamic*,
+  context-dependent behavior of the hypernet, not from extra capacity at
+  initialization.  This is the kind of parameter-matched control GAF
+  lacked.
+
+**Risks / pitfalls**
+
+* The hypernet may converge to producing a near-constant `alpha`, making
+  it indistinguishable from the paper baseline.  This would itself be a
+  result: "context does not carry useful information for `alpha`".
+* `sigmoid(3.5) = 0.97` saturates the gradient.  If the hypernet does
+  not move `alpha` away from 3.5 early in training, the rest of the
+  forward pass is effectively the paper's vanilla pipeline.  Track the
+  per-cell mean and std of `alpha` during training to confirm whether
+  Hypernet-AF actually moves it.
+* Add an `alpha` histogram or a per-step mean to the run logs so the
+  report can distinguish "the hypernet does not do anything" from
+  "the hypernet helps".
+
+**Cost estimate**
+
+* Code: roughly 80 LOC including a tiny logging hook for `alpha`.
+* Compute: 20 new tasks on the small grid (only the third variant).
+  About 1 to 2 GPU-hours.
+
+### Extension C: PS-SRS -- Pattern-Supervised SRS
+
+**Paper claims addressed**
+
+* FW#4 -- *"design a module to supervise the sample-wise data patterns,
+  constructing a more explicit optimization objective between data
+  patterns and `alpha`".*
+* L3 -- *"the selected patches are useful for forecasting, but not all of
+  them are interpretable".*
+
+**Motivation**
+
+In SRSNet the scorer is trained end-to-end with the prediction loss.
+Nothing forces it to learn anything that a human can audit.  PS-SRS adds
+an auxiliary loss that asks the scorer's intermediate representation to
+predict pre-computed pattern descriptors of each candidate window.  If
+the scorer can simultaneously do forecasting *and* predict those
+descriptors, then "the scorer learned something pattern-related" becomes
+a verifiable claim rather than a hand-wave.
+
+This is the most novel of the three because it modifies the *training
+objective*, not just the architecture.
+
+**Design sketch**
+
+```python
+class SRSPatternSupervised(SRS):
+    """Add an auxiliary loss that predicts engineered pattern descriptors."""
+
+    N_DESCRIPTORS = 3  # e.g., dominant FFT magnitude, lag-1 autocorr, variance
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # An auxiliary head that pulls features out of the first scorer layer
+        # and predicts the N_DESCRIPTORS-dim summary of each window.
+        hidden_dim = self.scorer_select[0].out_features
+        self.descriptor_head = nn.Linear(hidden_dim, self.N_DESCRIPTORS)
+
+    def _scorer_features(self, x_rec):
+        # x_rec: [B, C, candidate_num, patch_size]
+        # Reuse the first hidden layer of scorer_select.
+        return torch.relu(self.scorer_select[0](x_rec))
+
+    def descriptor_loss(self, x_rec, ground_truth_descriptors):
+        feats = self._scorer_features(x_rec)
+        pred = self.descriptor_head(feats)
+        return F.mse_loss(pred, ground_truth_descriptors)
+
+    # _select is inherited unchanged; the auxiliary head only affects training.
+```
+
+The training loop is also modified:
+
+```python
+# In SRSNet's _process or training step:
+total_loss = mse_loss + lambda_aux * patch_embedding.descriptor_loss(
+    x_rec, precomputed_descriptors
+)
+```
+
+Pre-compute the ground-truth descriptors offline for each (dataset, split)
+pair to avoid recomputing them every batch.  `lambda_aux` is a single
+scalar hyperparameter.  A small initial value (`1e-3` to `1e-2`) lets us
+tune the strength of the auxiliary signal without overwhelming the main
+forecasting loss.
+
+**Why this is a contribution beyond TASP**
+
+* TASP makes the scorer *transparent* by changing its inputs.  PS-SRS
+  goes further: it forces the scorer's *internal representation* to be
+  predictive of named statistics.  The two are not mutually exclusive,
+  but PS-SRS is the more aggressive intervention.
+* The auxiliary loss adds a meaningful regularizer.  Even if PS-SRS does
+  not change end-task MSE, it produces a *probe-ready* scorer: at
+  evaluation time, the descriptor head can be queried to verify how
+  much of each pattern type the scorer captured per cell.
+
+**Risks / pitfalls**
+
+* `lambda_aux` is now a tunable that interacts with the main loss.  A
+  small sweep (`{1e-3, 1e-2, 1e-1}`) on one cell is mandatory before
+  running 5 seeds across all cells.
+* Pre-computing descriptors requires deciding *which* descriptors to
+  use.  If the same descriptors are used for TASP and PS-SRS, the two
+  experiments share a methodological choice and should be discussed
+  together.
+* The probe-ready property is only useful if the auxiliary loss
+  converges to a low value.  Log the auxiliary loss alongside MSE and
+  report both.
+
+**Cost estimate**
+
+* Code: roughly 150 LOC including the descriptor pre-computation script,
+  a small change to the training loop in
+  `ts_benchmark/baselines/srsnet/srsnet.py::_process`, and the new layer.
+* Compute: 20 new tasks on the small grid, plus a 5-row hyperparameter
+  sweep for `lambda_aux`.  About 2 to 3 GPU-hours total.
+
+### Comparison Table
+
+| Extension | Paper FW addressed | Capacity-confounded? | Net new code | Net new tasks (small grid) | Probe-ready output |
+|---|---|---|---|---|---|
+| TASP        | FW#1 + L3       | No (fewer params than baseline scorer) | ~100 LOC | 20 | engineered features visible per selection |
+| Hypernet-AF | FW#3 + L4       | No (parameter-matched, zero-init)      | ~80 LOC  | 20 | per-cell `alpha` distribution over training |
+| PS-SRS      | FW#4 + L3       | No (lambda-controlled aux loss)        | ~150 LOC | 20 + 5-row sweep | per-cell descriptor recovery error |
+
+### Recommended Sequencing
+
+The selectivity-controls Random study should remain the headline result of
+the report because it directly addresses the paper's central claim.  The
+constructive extensions are best presented as a single follow-up section
+that demonstrates the gap can be filled, not as separate competing
+models.  Suggested ordering:
+
+1. **Random study** (already complete).  Negative-control result.
+2. **TASP**.  Lightest constructive extension.  If TASP matches SRSNet
+   within the seed band, the narrative becomes "a transparent four-feature
+   scorer suffices".
+3. **Hypernet-AF**.  Smallest architectural change.  If it does not move
+   `alpha` away from 3.5, that itself answers FW#3 with a null result and
+   should be reported.
+4. **PS-SRS**.  Most novel and most expensive.  Only run if items 2 and
+   3 leave a clear opening for "interpretability via training, not just
+   architecture".
+
+If compute is constrained, drop PS-SRS first, then Hypernet-AF.  TASP
+should remain because it pairs most directly with the Random study: TASP
+*is* the constructive counterpart of the negative-control result.
+
+### Acceptance Criteria for Constructive Extensions
+
+* The variant's MSE is reported per (dataset, horizon) cell across all
+  five seeds, with mean and standard deviation, exactly like the
+  Random study.
+* Parameter count is reported alongside MSE so the reader can verify the
+  comparison is not silently capacity-confounded.
+* For Hypernet-AF and PS-SRS, log at least one diagnostic per run that
+  shows whether the new component is actually doing work
+  (`alpha` distribution, auxiliary loss curve, descriptor recovery error).
+* The writeup framing remains "missing-control plus minimal
+  constructive answer", not "new state of the art".  Negative or null
+  results are reportable and should be reported.
