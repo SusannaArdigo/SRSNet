@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 
 from ts_benchmark.baselines.srsnet.layers.SRS import SRS
@@ -114,6 +115,197 @@ class SRSRandomSPRandomShuffle(SRSRandomSP):
 
 
 # ---------------------------------------------------------------------------
+# Constructive extensions: TASP, Hypernet-AF, PS-SRS
+# ---------------------------------------------------------------------------
+class SRSTimeAware(SRS):
+    """TASP: scorer over engineered interpretable features.
+
+    Addresses paper FW#1 (environment-aware mechanism) + L3 (interpretability).
+    Replaces the [patch_len -> hidden -> patch_num] MLP scorer with a
+    [4 -> 16 -> patch_num] MLP whose inputs are 4 per-window summary
+    statistics: dominant FFT magnitude, lag-1 autocorrelation, variance,
+    and trend slope.  Total scorer parameters drop sharply, so any
+    improvement cannot be attributed to extra capacity.
+    """
+
+    N_FEATURES = 4
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Replace the learned scorer over raw patch values with a tiny
+        # MLP over engineered per-window features.  The shuffle scorer
+        # is left alone so any change in MSE is attributable to the
+        # selection scorer alone.
+        hidden = max(self.N_FEATURES * 4, 16)
+        self.scorer_select = nn.Sequential(
+            nn.Linear(self.N_FEATURES, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, self.patch_num),
+        )
+
+    @staticmethod
+    def _window_features(x_rec):
+        """x_rec: [B, C, candidate_num, patch_size] -> [B, C, candidate_num, 4]."""
+        # Dominant non-DC FFT magnitude per window.
+        spec = torch.fft.rfft(x_rec, dim=-1).abs()
+        if spec.shape[-1] > 1:
+            dominant = spec[..., 1:].max(dim=-1).values
+        else:
+            dominant = spec[..., 0]
+        # Demean for autocorrelation and trend-slope computation.
+        mean = x_rec.mean(dim=-1, keepdim=True)
+        var = x_rec.var(dim=-1, unbiased=False)
+        x_c = x_rec - mean
+        # Lag-1 autocorrelation, biased toward zero for very short windows.
+        denom = x_c.pow(2).sum(dim=-1) + 1e-8
+        ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
+        # Trend slope: least-squares fit residual.
+        t = torch.arange(x_rec.shape[-1], device=x_rec.device, dtype=x_rec.dtype)
+        t_c = t - t.mean()
+        slope_denom = (t_c * t_c).sum() + 1e-8
+        slope = ((x_rec - mean) * t_c).sum(dim=-1) / slope_denom
+        feats = torch.stack([dominant, ac1, var, slope], dim=-1)
+        return feats
+
+    def _select(self, x_rec):
+        # x_rec: [B, C, candidate_num, patch_size]
+        feats = self._window_features(x_rec)
+        scores = self.scorer_select(feats)  # [B, C, candidate_num, patch_num]
+        indices = torch.argmax(scores, dim=-2, keepdim=True)
+        max_scores = torch.gather(input=scores, dim=-2, index=indices)
+        non_zero_mask = max_scores != 0
+        inv = (1 / max_scores[non_zero_mask]).detach()
+        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)
+        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)
+        max_scores[non_zero_mask] *= inv
+        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches
+        return selected_patches
+
+
+class SRSHypernetAF(SRS):
+    """Hypernet-AF: data-dependent alpha via a tiny hypernet.
+
+    Addresses paper FW#3 (efficient alpha update mechanism) + L4
+    (initialization).  Replaces the free [patch_num, d_model] alpha
+    parameter with a small hypernet that consumes a batch-level context
+    vector and outputs the per-cell alpha.  Zero-init of the hypernet
+    weights plus a constant bias of 3.5 makes step 0 behave identically
+    to the paper's default (sigmoid(3.5) ~ 0.97), so any deviation must
+    come from learned context-dependence rather than capacity at init.
+    """
+
+    HYPER_HIDDEN = 8
+    INIT_ALPHA = 3.5
+
+    def __init__(self, d_model, patch_len, stride, seq_len, dropout,
+                 hidden_size, alpha=2.0, pos=True):
+        super().__init__(d_model, patch_len, stride, seq_len, dropout,
+                         hidden_size, alpha, pos)
+        # Remove the free alpha parameter; the hypernet replaces it.
+        # We still keep the buffer name for state-dict shape compatibility
+        # with vanilla SRSNet, but it will not be used in forward().
+        if hasattr(self, "alpha"):
+            self.register_buffer("_unused_alpha", torch.zeros_like(self.alpha.data))
+            del self.alpha
+        self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)
+        self.hyper = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)
+        # Vanilla-preserving init: zero weights + bias = INIT_ALPHA on the
+        # output so sigmoid(alpha_t=0) ~ 0.97, matching the paper baseline.
+        nn.init.zeros_(self.context_proj.weight)
+        nn.init.zeros_(self.context_proj.bias)
+        nn.init.zeros_(self.hyper.weight)
+        nn.init.constant_(self.hyper.bias, self.INIT_ALPHA)
+
+    def forward(self, x):
+        n_vars = x.shape[1]
+        x = self.padding_patch_layer(x)
+        rec_repr_space = self._rec_view(x)
+        original_repr_space = self._origin_view(x)
+        e_orig = self.value_embedding_org(original_repr_space)
+        e_rec = self.value_embedding_rec(rec_repr_space)
+        # Context: mean across batch*nvars and across patches of e_orig.
+        # Shape after the SRS forward of the parent: [bs*nvars, patch_num, d_model].
+        ctx = e_orig.mean(dim=0).mean(dim=0)  # [d_model]
+        h = torch.relu(self.context_proj(ctx))
+        alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])
+        weight = torch.sigmoid(alpha_dyn)
+        embedding = weight * e_orig + (1.0 - weight) * e_rec
+        if self.pos:
+            embedding = embedding + self.position_embedding(original_repr_space)
+        return self.dropout(embedding), n_vars
+
+
+class SRSPatternSupervised(SRS):
+    """PS-SRS: scorer trained with an auxiliary pattern-descriptor loss.
+
+    Addresses paper FW#4 (supervised module for sample-wise patterns) +
+    L3 (interpretability).  Adds an auxiliary head over the scorer's
+    first hidden layer that predicts a small set of engineered
+    descriptors (FFT magnitude, lag-1 autocorrelation, variance).  The
+    auxiliary loss is exposed via ``last_aux_loss`` so the SRSNet
+    wrapper can return it in ``out_loss["additional_loss"]``.  When the
+    layer is in ``eval()`` mode the auxiliary computation is skipped.
+    """
+
+    N_DESCRIPTORS = 3
+    LAMBDA_AUX = 1e-2
+
+    def __init__(self, d_model, patch_len, stride, seq_len, dropout,
+                 hidden_size, alpha=2.0, pos=True):
+        super().__init__(d_model, patch_len, stride, seq_len, dropout,
+                         hidden_size, alpha, pos)
+        # The scorer in the parent is nn.Sequential(Linear, ReLU, Linear).
+        # We tap into the first hidden activation (after the ReLU) and
+        # predict a per-window descriptor vector from it.
+        hidden_dim = self.scorer_select[0].out_features
+        self.descriptor_head = nn.Linear(hidden_dim, self.N_DESCRIPTORS)
+        self.last_aux_loss = torch.tensor(0.0)
+
+    @staticmethod
+    def _ground_truth_descriptors(x_rec):
+        """Compute the engineered descriptors used as auxiliary targets."""
+        spec = torch.fft.rfft(x_rec, dim=-1).abs()
+        if spec.shape[-1] > 1:
+            dominant = spec[..., 1:].max(dim=-1).values
+        else:
+            dominant = spec[..., 0]
+        mean = x_rec.mean(dim=-1, keepdim=True)
+        var = x_rec.var(dim=-1, unbiased=False)
+        x_c = x_rec - mean
+        denom = x_c.pow(2).sum(dim=-1) + 1e-8
+        ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
+        return torch.stack([dominant, ac1, var], dim=-1)
+
+    def _select(self, x_rec):
+        # Compute scorer activations once, then reuse for both selection
+        # and the auxiliary loss.
+        first_layer = self.scorer_select[0]
+        relu = self.scorer_select[1]
+        second_layer = self.scorer_select[2]
+        h = relu(first_layer(x_rec))
+        scores = second_layer(h)
+
+        if self.training:
+            with torch.no_grad():
+                gt = self._ground_truth_descriptors(x_rec)
+            pred = self.descriptor_head(h)
+            self.last_aux_loss = F.mse_loss(pred, gt) * self.LAMBDA_AUX
+        else:
+            self.last_aux_loss = torch.tensor(0.0, device=x_rec.device)
+
+        # Mirror the parent's selection logic from this point on.
+        indices = torch.argmax(scores, dim=-2, keepdim=True)
+        max_scores = torch.gather(input=scores, dim=-2, index=indices)
+        non_zero_mask = max_scores != 0
+        inv = (1 / max_scores[non_zero_mask]).detach()
+        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)
+        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)
+        max_scores[non_zero_mask] *= inv
+        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches
+        return selected_patches
+
+
+# ---------------------------------------------------------------------------
 # SRSNetModel subclasses (swap the patch_embedding for the random variant)
 # ---------------------------------------------------------------------------
 class _SelectivityControlsSRSNetModel(SRSNetModel):
@@ -151,6 +343,18 @@ class SRSNet_RandomSPRandomShuffle_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSRandomSPRandomShuffle
 
 
+class SRSNet_TASP_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSTimeAware
+
+
+class SRSNet_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSHypernetAF
+
+
+class SRSNet_PSRS_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSPatternSupervised
+
+
 # ---------------------------------------------------------------------------
 # DeepForecastingModelBase wrappers (registered in __init__.py)
 # ---------------------------------------------------------------------------
@@ -183,6 +387,37 @@ class SRSNet_RandomSPRandomShuffle(_SelectivityControlsSRSNet):
     model_cls = SRSNet_RandomSPRandomShuffle_Model
 
 
+class SRSNet_TASP(_SelectivityControlsSRSNet):
+    variant_name = "SRSNet_TASP"
+    model_cls = SRSNet_TASP_Model
+
+
+class SRSNet_HypernetAF(_SelectivityControlsSRSNet):
+    variant_name = "SRSNet_HypernetAF"
+    model_cls = SRSNet_HypernetAF_Model
+
+
+class SRSNet_PSRS(_SelectivityControlsSRSNet):
+    """SRSNet wrapper for PS-SRS.
+
+    Overrides ``_process`` to expose the auxiliary descriptor-recovery
+    loss as ``out_loss["additional_loss"]``.  The base
+    ``DeepForecastingModelBase`` already adds that key to the training
+    loss when present (see deep_forecasting_model_base.py:345-350).
+    """
+
+    variant_name = "SRSNet_PSRS"
+    model_cls = SRSNet_PSRS_Model
+
+    def _process(self, input, target, input_mark, target_mark):
+        output = self.model(input)
+        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
+        out_loss = {"output": output}
+        if aux is not None and self.model.training:
+            out_loss["additional_loss"] = aux
+        return out_loss
+
+
 # Backwards compatibility alias: the old broad-extensions code referenced
 # ``srs_paper.SRSNet_RandomSRS``.  Keep that name as an alias so any stale
 # tasks in older manifests still resolve, but emit no behaviour difference.
@@ -193,23 +428,36 @@ for _cls in (
     SRSNet_RandomSP,
     SRSNet_RandomSPNoShuffle,
     SRSNet_RandomSPRandomShuffle,
+    SRSNet_TASP,
+    SRSNet_HypernetAF,
+    SRSNet_PSRS,
 ):
     _cls.MODEL_HYPER_PARAMS = MODEL_HYPER_PARAMS
 
 
 __all__ = [
-    # Layers
+    # Layers -- random controls
     "SRSRandomSP",
     "SRSRandomSPNoShuffle",
     "SRSRandomSPRandomShuffle",
+    # Layers -- constructive extensions
+    "SRSTimeAware",
+    "SRSHypernetAF",
+    "SRSPatternSupervised",
     # Model wrappers
     "SRSNet_RandomSP",
     "SRSNet_RandomSPNoShuffle",
     "SRSNet_RandomSPRandomShuffle",
+    "SRSNet_TASP",
+    "SRSNet_HypernetAF",
+    "SRSNet_PSRS",
     # Backwards-compat alias
     "SRSNet_RandomSRS",
     # Inner SRSNetModel subclasses (exposed for completeness)
     "SRSNet_RandomSP_Model",
     "SRSNet_RandomSPNoShuffle_Model",
     "SRSNet_RandomSPRandomShuffle_Model",
+    "SRSNet_TASP_Model",
+    "SRSNet_HypernetAF_Model",
+    "SRSNet_PSRS_Model",
 ]

@@ -41,8 +41,13 @@ SELECTIVITY_HORIZONS_FULL = [96, 192, 336, 720]
 SELECTIVITY_SEEDS = [2021, 2022, 2023, 2024, 2025]
 SELECTIVITY_VARIANTS = [
     None,  # baseline: original SRSNet (kept in manifest for explicit comparison)
+    # Random controls (negative-control study)
     "srs_paper.SRSNet_RandomSP",
     "srs_paper.SRSNet_RandomSPNoShuffle",
+    # Constructive extensions (mapped to paper FW#1/3/4 + L3/L4)
+    "srs_paper.SRSNet_TASP",         # FW#1 + L3
+    "srs_paper.SRSNet_HypernetAF",   # FW#3 + L4
+    "srs_paper.SRSNet_PSRS",         # FW#4 + L3
 ]
 
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
