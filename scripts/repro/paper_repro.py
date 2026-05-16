@@ -48,6 +48,10 @@ SELECTIVITY_VARIANTS = [
     "srs_paper.SRSNet_TASP",         # FW#1 + L3
     "srs_paper.SRSNet_HypernetAF",   # FW#3 + L4
     "srs_paper.SRSNet_PSRS",         # FW#4 + L3
+    # Factorial combinations (Select x Fusion) -- complete the 3x2 design
+    "srs_paper.SRSNet_RandomSP_HypernetAF",
+    "srs_paper.SRSNet_TASP_HypernetAF",
+    "srs_paper.SRSNet_PSRS_HypernetAF",
 ]
 
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).

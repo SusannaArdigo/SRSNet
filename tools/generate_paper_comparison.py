@@ -1095,6 +1095,142 @@ def gen_selectivity_controls(sel_rows):
                 f"| {v} | {n} | {mean_d:+.2f} | {std_d:.2f} | {wins}/{n} |"
             )
 
+    # -------- Cross-comparison matrix (pairwise mean delta MSE) -------------
+    md.append("")
+    md.append("## Pairwise cross-comparison (mean delta MSE row vs column)")
+    md.append("")
+    md.append(
+        "Each cell is the mean over all (dataset, horizon, seed) cells of "
+        "the percentage delta MSE of the row variant relative to the column "
+        "variant.  Positive values mean the row variant is worse than the "
+        "column variant on average."
+    )
+    md.append("")
+    all_variants = ["SRSNet"] + variants
+    # Build a (row, col) -> mean_delta table.
+    header_cells = ["variant"] + all_variants
+    md.append("| " + " | ".join(header_cells) + " |")
+    md.append("|" + "|".join(["---"] * (len(all_variants) + 1)) + "|")
+    for row_v in all_variants:
+        row = [row_v]
+        for col_v in all_variants:
+            if row_v == col_v:
+                row.append("-")
+                continue
+            deltas = []
+            for ds in datasets:
+                for h in horizons:
+                    for s in seeds:
+                        if (ds, h, s, row_v) not in cells:
+                            continue
+                        if (ds, h, s, col_v) not in cells:
+                            continue
+                        col_mse = cells[(ds, h, s, col_v)][0]
+                        row_mse = cells[(ds, h, s, row_v)][0]
+                        d = delta_pct(row_mse, col_mse)
+                        if d is not None:
+                            deltas.append(d)
+            if deltas:
+                row.append(f"{statistics.mean(deltas):+.2f}")
+            else:
+                row.append("")
+        md.append("| " + " | ".join(row) + " |")
+
+    # -------- Factorial decomposition (Select x Fusion) ---------------------
+    factorial_variants = {
+        ("Learned", "FreeAlpha"): "SRSNet",
+        ("Random", "FreeAlpha"): "SRSNet_RandomSP",
+        ("TASP", "FreeAlpha"): "SRSNet_TASP",
+        ("LearnedAux", "FreeAlpha"): "SRSNet_PSRS",
+        ("Learned", "Hypernet"): "SRSNet_HypernetAF",
+        ("Random", "Hypernet"): "SRSNet_RandomSP_HypernetAF",
+        ("TASP", "Hypernet"): "SRSNet_TASP_HypernetAF",
+        ("LearnedAux", "Hypernet"): "SRSNet_PSRS_HypernetAF",
+    }
+    have_factorial = all(
+        any(v == name for v in all_variants)
+        for name in factorial_variants.values()
+    )
+    if have_factorial:
+        md.append("")
+        md.append("## Factorial decomposition: Select x Fusion")
+        md.append("")
+        md.append(
+            "Mean MSE across the small grid (lower is better).  Reads the "
+            "interaction between the selection mechanism (rows) and the "
+            "fusion mechanism (columns)."
+        )
+        md.append("")
+        md.append("| Select \\ Fusion | Free alpha | Hypernet alpha |")
+        md.append("|---|---|---|")
+        for select_label in ["Learned", "Random", "TASP", "LearnedAux"]:
+            row = [select_label]
+            for fusion_label in ["FreeAlpha", "Hypernet"]:
+                v = factorial_variants[(select_label, fusion_label)]
+                values = [
+                    cells[(ds, h, s, v)][0]
+                    for ds in datasets
+                    for h in horizons
+                    for s in seeds
+                    if (ds, h, s, v) in cells
+                ]
+                if values:
+                    row.append(f"{statistics.mean(values):.4f}")
+                else:
+                    row.append("")
+            md.append("| " + " | ".join(row) + " |")
+
+        # Main effects: average delta of switching one factor while keeping the other fixed.
+        md.append("")
+        md.append("### Main effects (average effect of switching factor level)")
+        md.append("")
+        md.append("| Factor | Level change | Mean delta MSE (paired across other factor) |")
+        md.append("|---|---|---|")
+        # Fusion effect: Free alpha -> Hypernet, averaged over select levels.
+        fusion_effects = []
+        for select_label in ["Learned", "Random", "TASP", "LearnedAux"]:
+            v_free = factorial_variants[(select_label, "FreeAlpha")]
+            v_hyper = factorial_variants[(select_label, "Hypernet")]
+            for ds in datasets:
+                for h in horizons:
+                    for s in seeds:
+                        a = cells.get((ds, h, s, v_free))
+                        b = cells.get((ds, h, s, v_hyper))
+                        if a is None or b is None:
+                            continue
+                        d = delta_pct(b[0], a[0])
+                        if d is not None:
+                            fusion_effects.append(d)
+        if fusion_effects:
+            md.append(
+                f"| Fusion | FreeAlpha -> Hypernet | "
+                f"{statistics.mean(fusion_effects):+.2f}% "
+                f"(std {statistics.stdev(fusion_effects):.2f}, n={len(fusion_effects)}) |"
+            )
+        # Select effects: each non-Learned vs Learned, paired across fusion levels.
+        for select_label in ["Random", "TASP", "LearnedAux"]:
+            select_effects = []
+            for fusion_label in ["FreeAlpha", "Hypernet"]:
+                v_learned = factorial_variants[("Learned", fusion_label)]
+                v_test = factorial_variants[(select_label, fusion_label)]
+                for ds in datasets:
+                    for h in horizons:
+                        for s in seeds:
+                            a = cells.get((ds, h, s, v_learned))
+                            b = cells.get((ds, h, s, v_test))
+                            if a is None or b is None:
+                                continue
+                            d = delta_pct(b[0], a[0])
+                            if d is not None:
+                                select_effects.append(d)
+            if select_effects:
+                md.append(
+                    f"| Select | Learned -> {select_label} | "
+                    f"{statistics.mean(select_effects):+.2f}% "
+                    f"(std {statistics.stdev(select_effects):.2f}, "
+                    f"n={len(select_effects)}) |"
+                )
+
     md.append("")
     md.append("## Interpretation guidance")
     md.append("")
@@ -1105,11 +1241,15 @@ def gen_selectivity_controls(sel_rows):
     md.append("  Table 4's NoSP variant.")
     md.append("- A negative mean delta MSE (random better than SRSNet) is a refutation")
     md.append("  but requires checking seed-level variance before reporting.")
+    md.append("- The factorial decomposition isolates the Select factor and the Fusion")
+    md.append("  factor.  If Fusion main effect is close to zero, Hypernet-AF does not")
+    md.append("  meaningfully change the fusion behavior; if Select effects are all")
+    md.append("  small, the choice of selector is largely irrelevant.")
     md.append("- Conclusions are scoped to the tested (datasets, horizons, seeds, hardware)")
     md.append("  and do not generalize to other patch-based models.")
 
     out_md.write_text("\n".join(md) + "\n")
-    print(f"  OK {out_md.name}: aggregate report written")
+    print(f"  OK {out_md.name}: aggregate report written (with cross-comparison + factorial)")
 
 
 def main():

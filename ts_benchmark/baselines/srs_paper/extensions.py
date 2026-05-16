@@ -306,6 +306,84 @@ class SRSPatternSupervised(SRS):
 
 
 # ---------------------------------------------------------------------------
+# Factorial combinations: (any _select variant) x (Hypernet alpha fusion)
+# ---------------------------------------------------------------------------
+def _make_hypernet_combo(base_select_cls, combo_name):
+    """Compose a base SRS variant (which defines ``_select``) with Hypernet
+    alpha fusion (which overrides ``forward`` to replace the free alpha
+    parameter with a tiny hypernet over a batch-level context vector).
+
+    The factory keeps the ``__init__`` and ``forward`` body in one place so
+    that all (Random/TASP/PSRS) x HypernetAF combos share identical fusion
+    code.  Only the inherited ``_select`` differs.
+    """
+
+    class _Combo(base_select_cls):
+        """Factorial combination: <base_select_cls._select> + Hypernet-AF."""
+
+        HYPER_HIDDEN = SRSHypernetAF.HYPER_HIDDEN
+        INIT_ALPHA = SRSHypernetAF.INIT_ALPHA
+
+        def __init__(self, d_model, patch_len, stride, seq_len, dropout,
+                     hidden_size, alpha=2.0, pos=True):
+            super().__init__(
+                d_model, patch_len, stride, seq_len, dropout,
+                hidden_size, alpha, pos,
+            )
+            # Replace the free alpha parameter with the same zero-init
+            # hypernet pattern used by SRSHypernetAF (vanilla-preserving).
+            if hasattr(self, "alpha"):
+                self.register_buffer(
+                    "_unused_alpha", torch.zeros_like(self.alpha.data)
+                )
+                del self.alpha
+            self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)
+            self.hyper = nn.Linear(
+                self.HYPER_HIDDEN, self.patch_num * d_model
+            )
+            nn.init.zeros_(self.context_proj.weight)
+            nn.init.zeros_(self.context_proj.bias)
+            nn.init.zeros_(self.hyper.weight)
+            nn.init.constant_(self.hyper.bias, self.INIT_ALPHA)
+
+        def forward(self, x):
+            n_vars = x.shape[1]
+            x = self.padding_patch_layer(x)
+            # _rec_view calls _select internally; the inherited _select
+            # (random / engineered / supervised) is what makes each combo
+            # different.
+            rec_repr_space = self._rec_view(x)
+            original_repr_space = self._origin_view(x)
+            e_orig = self.value_embedding_org(original_repr_space)
+            e_rec = self.value_embedding_rec(rec_repr_space)
+            ctx = e_orig.mean(dim=0).mean(dim=0)
+            h = torch.relu(self.context_proj(ctx))
+            alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])
+            weight = torch.sigmoid(alpha_dyn)
+            embedding = weight * e_orig + (1.0 - weight) * e_rec
+            if self.pos:
+                embedding = embedding + self.position_embedding(
+                    original_repr_space
+                )
+            return self.dropout(embedding), n_vars
+
+    _Combo.__name__ = combo_name
+    _Combo.__qualname__ = combo_name
+    return _Combo
+
+
+SRSTimeAware_HypernetAF = _make_hypernet_combo(
+    SRSTimeAware, "SRSTimeAware_HypernetAF"
+)
+SRSRandomSP_HypernetAF = _make_hypernet_combo(
+    SRSRandomSP, "SRSRandomSP_HypernetAF"
+)
+SRSPatternSupervised_HypernetAF = _make_hypernet_combo(
+    SRSPatternSupervised, "SRSPatternSupervised_HypernetAF"
+)
+
+
+# ---------------------------------------------------------------------------
 # SRSNetModel subclasses (swap the patch_embedding for the random variant)
 # ---------------------------------------------------------------------------
 class _SelectivityControlsSRSNetModel(SRSNetModel):
@@ -353,6 +431,19 @@ class SRSNet_HypernetAF_Model(_SelectivityControlsSRSNetModel):
 
 class SRSNet_PSRS_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSPatternSupervised
+
+
+# Factorial combinations
+class SRSNet_TASP_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSTimeAware_HypernetAF
+
+
+class SRSNet_RandomSP_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSRandomSP_HypernetAF
+
+
+class SRSNet_PSRS_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSPatternSupervised_HypernetAF
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +509,40 @@ class SRSNet_PSRS(_SelectivityControlsSRSNet):
         return out_loss
 
 
+# Factorial combinations (Select x Fusion)
+class SRSNet_TASP_HypernetAF(_SelectivityControlsSRSNet):
+    """Engineered-feature select + Hypernet alpha fusion."""
+
+    variant_name = "SRSNet_TASP_HypernetAF"
+    model_cls = SRSNet_TASP_HypernetAF_Model
+
+
+class SRSNet_RandomSP_HypernetAF(_SelectivityControlsSRSNet):
+    """Random select + Hypernet alpha fusion."""
+
+    variant_name = "SRSNet_RandomSP_HypernetAF"
+    model_cls = SRSNet_RandomSP_HypernetAF_Model
+
+
+class SRSNet_PSRS_HypernetAF(_SelectivityControlsSRSNet):
+    """Supervised learned select + Hypernet alpha fusion.
+
+    Like SRSNet_PSRS this exposes the auxiliary descriptor loss via
+    ``out_loss["additional_loss"]`` so it is added to the training loss.
+    """
+
+    variant_name = "SRSNet_PSRS_HypernetAF"
+    model_cls = SRSNet_PSRS_HypernetAF_Model
+
+    def _process(self, input, target, input_mark, target_mark):
+        output = self.model(input)
+        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
+        out_loss = {"output": output}
+        if aux is not None and self.model.training:
+            out_loss["additional_loss"] = aux
+        return out_loss
+
+
 # Backwards compatibility alias: the old broad-extensions code referenced
 # ``srs_paper.SRSNet_RandomSRS``.  Keep that name as an alias so any stale
 # tasks in older manifests still resolve, but emit no behaviour difference.
@@ -431,6 +556,9 @@ for _cls in (
     SRSNet_TASP,
     SRSNet_HypernetAF,
     SRSNet_PSRS,
+    SRSNet_TASP_HypernetAF,
+    SRSNet_RandomSP_HypernetAF,
+    SRSNet_PSRS_HypernetAF,
 ):
     _cls.MODEL_HYPER_PARAMS = MODEL_HYPER_PARAMS
 
@@ -444,6 +572,10 @@ __all__ = [
     "SRSTimeAware",
     "SRSHypernetAF",
     "SRSPatternSupervised",
+    # Layers -- factorial combinations
+    "SRSTimeAware_HypernetAF",
+    "SRSRandomSP_HypernetAF",
+    "SRSPatternSupervised_HypernetAF",
     # Model wrappers
     "SRSNet_RandomSP",
     "SRSNet_RandomSPNoShuffle",
@@ -451,13 +583,9 @@ __all__ = [
     "SRSNet_TASP",
     "SRSNet_HypernetAF",
     "SRSNet_PSRS",
+    "SRSNet_TASP_HypernetAF",
+    "SRSNet_RandomSP_HypernetAF",
+    "SRSNet_PSRS_HypernetAF",
     # Backwards-compat alias
     "SRSNet_RandomSRS",
-    # Inner SRSNetModel subclasses (exposed for completeness)
-    "SRSNet_RandomSP_Model",
-    "SRSNet_RandomSPNoShuffle_Model",
-    "SRSNet_RandomSPRandomShuffle_Model",
-    "SRSNet_TASP_Model",
-    "SRSNet_HypernetAF_Model",
-    "SRSNet_PSRS_Model",
 ]
