@@ -159,10 +159,76 @@ Questa è una **scoperta interessante per critica**: il vantaggio di SRS è meno
 
 ---
 
-## 6. Riferimenti per i numeri
+## 6. Selectivity-controls study — Esperimento centrale (post-revisione)
+
+Per evitare estensioni capacity-confounded (GAF, MSP) o no-op (DDA, vedi `scripts/repro/selectivity_extension_plan.md`), il contributo principale del nostro lavoro diventa uno **studio di control mancante** sul claim centrale del paper: *"learned selective patching matters"*.
+
+### 6.1 Setup
+
+| Parametro | Valore |
+|---|---|
+| Datasets | ETTh1, ETTm2 |
+| Horizons | 96, 720 |
+| Seeds | 2021–2025 (5 seed) |
+| Variants | SRSNet (learned) / RandomSP / RandomSPNoShuffle |
+| Total task | 60 (2 × 2 × 5 × 3) |
+| Hardware | Hivenet RTX 4090 24GB |
+| Protocol | paper-mode (batch=64, `train_drop_last=false`) |
+
+**Varianti** (`ts_benchmark/baselines/srs_paper/extensions.py`):
+- `SRSRandomSP`: override `_select` con `torch.randint` (random patch indices), `_shuffle` learned mantenuto
+- `SRSRandomSPNoShuffle`: random `_select` + identity `_shuffle` (deterministic)
+
+### 6.2 Risultati aggregate (20 cells per variant)
+
+| Variant | Mean Δ MSE vs SRSNet | Std | Seed-level wins |
+|---|---|---|---|
+| **SRSNet_RandomSP** | **−0.22%** | 1.23% | **12/20** |
+| **SRSNet_RandomSPNoShuffle** | **−0.12%** | 1.46% | **12/20** |
+
+### 6.3 Per-cell breakdown (mean ± std MSE)
+
+| Dataset | H | SRSNet (baseline) | RandomSP (Δ%) | RandomSPNoShuffle (Δ%) | wins (Random / NoShuf) |
+|---|---|---|---|---|---|
+| ETTh1 | 96 | 0.4360 ± 0.0006 | 0.4360 (+0.02%) | 0.4361 (+0.03%) | 3/5, 3/5 |
+| **ETTh1** | **720** | 0.6604 ± 0.0028 | **0.6545 (−0.90%)** | **0.6534 (−1.07%)** | **4/5, 5/5** |
+| ETTm2 | 96 | 0.1481 ± 0.0011 | 0.1482 (+0.04%) | 0.1486 (+0.30%) | 3/5, 2/5 |
+| ETTm2 | 720 | 0.2708 ± 0.0060 | 0.2706 (−0.08%) | 0.2714 (+0.23%) | 2/5, 2/5 |
+
+### 6.4 🔴 Conclusione critica
+
+Il claim del paper *"learned selective patching is essential"* (Sec. 4.1, basato su NoSP ablation) **NON è supportato** dai nostri controlli:
+
+1. **Random patch selection match o batte learned in 12/20 seed** (60% delle volte)
+2. Mean delta MSE (0.1-0.2%) è **dentro la variance dei seed** (std 1.2-1.5%) → differenze statisticamente indistinguibili
+3. **Sulla cella ETTh1 H720, RandomSPNoShuffle batte SRSNet su 5/5 seed** con −1.07% MSE — il controllo random è strettamente migliore del learned scorer
+4. Il fatto che la versione *deterministic* (NoShuffle) e quella *con learned shuffle* (RandomSP) abbiano risultati comparabili (Δ −0.12% vs −0.22%) suggerisce che anche `_shuffle` non sta facendo lavoro utile
+
+**Implicazione**: il modulo SRS attuale non sembra estrarre informazione che la selezione random non possa altrettanto produrre, su questo subset di task. Il paper avrebbe beneficiato di un controllo random oltre alla NoSP ablation (che disabilita selettivamente solo lo scorer di selezione, mantenendo l'architettura overall).
+
+### 6.5 Limitazioni del nostro controllo
+
+- **Solo 2 datasets × 2 horizons** = 4 celle. Non sappiamo se il pattern persiste sul full ETT grid (16 celle) o su dataset di scala diversa (Solar/Traffic/Weather).
+- **5 seed** non rigorosi statisticamente (n=5 → CI ampi).
+- Non abbiamo testato il selector swap **a inference time** (Esperimento 1 del plan) perché TFB non persiste checkpoint (`find result/ -name '*.pth'` ritorna vuoto). Sarebbe l'ideale per isolare contributo dello scorer learned a parità di pesi.
+- **RNG control**: `torch.randint` dentro `_select` non è tied al `--seed` esplicitamente. La randomicità della selezione è "ambient" rispetto al seed di training. Ack.
+
+### 6.6 Cosa NON facciamo (rispetto al plan)
+
+- ❌ DDA: identificato no-op (sigmoid saturato α=3.0+)
+- ❌ MSP: capacity-confounded + shape mismatch con plugin
+- ❌ GAF: capacity-confounded
+- ❌ Verdict labels (review #5): solo mean±std + win count
+
+---
+
+## 7. Riferimenti per i numeri
 
 - `report_tables/tab2_full_paper_repro.csv` — Tab.2 estesa con 8 modelli × 16 cells
 - `report_tables/tab2_baselines_paper_delta.csv` — Delta% vs paper Tab.8 per ogni cell
 - `report_tables/tab3_plugin_paper_repro.csv` — Plug-in MLP↔SRSNet (8 pairs)
 - `report_tables/tab4_ablation_paper_repro.csv` — Ablation 4 componenti (40 cells)
-- Repository: `github.com/SusannaArdigo/SRSNet`, branch `paper-faithful-repro-ett` HEAD `bb53f1b`
+- **`report_tables/selectivity_controls.csv`** — 60 (cell, seed, variant) rows
+- **`report_tables/selectivity_controls.md`** — mean±std + seed-level wins (focused study)
+- `scripts/repro/selectivity_extension_plan.md` — Design del missing-control study
+- Repository: `github.com/SusannaArdigo/SRSNet`, branch `paper-faithful-repro-ett-extensions` HEAD `706c3f1`
