@@ -864,6 +864,254 @@ def gen_extensions_summary(srsnet_rows, ext_rows):
     print(f"  ✅ {out_path.name}: {len(out_rows)} variant verdicts")
 
 
+# ---------------------------------------------------------------------------
+# Selectivity-controls scope helpers (current focused study, replacing the
+# broader extensions scope).  See scripts/repro/selectivity_extension_plan.md.
+# ---------------------------------------------------------------------------
+SELECTIVITY_SUMMARY = ROOT / "repro_results" / "selectivity-controls" / "summary.csv"
+
+
+def load_selectivity_summary():
+    """Read repro_results/selectivity-controls/summary.csv + test_reports."""
+    if not SELECTIVITY_SUMMARY.exists():
+        return []
+    rows = []
+    local_results = ROOT / "result" / "repro" / "selectivity-controls"
+    with open(SELECTIVITY_SUMMARY) as f:
+        for r in csv.DictReader(f):
+            if r["status"] != "completed":
+                continue
+            task_dir = local_results / r["table"] / r["task_id"]
+            if not task_dir.exists():
+                continue
+            reports = sorted(
+                task_dir.glob("test_report*.csv"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            if not reports:
+                continue
+            metrics = {}
+            with open(reports[-1]) as rf:
+                next(rf)
+                for line in rf:
+                    parts = line.rstrip("\n").rsplit(",", 1)
+                    if len(parts) != 2:
+                        continue
+                    name = parts[0].split(",")[-1].strip().strip('"')
+                    try:
+                        val = float(parts[1])
+                    except ValueError:
+                        continue
+                    metrics[name] = val
+            r["mse"] = str(metrics.get("mse_norm", ""))
+            r["mae"] = str(metrics.get("mae_norm", ""))
+            rows.append(r)
+    return rows
+
+
+def gen_selectivity_controls(sel_rows):
+    """Generate selectivity_controls.csv + .md from the small-grid runs.
+
+    Per the plan (review note #5) we do **not** emit verdict labels.  We
+    report mean +/- std across seeds and the number of seeds where each
+    control variant beats SRSNet on the same (dataset, horizon, seed).
+    """
+    import statistics
+
+    if not sel_rows:
+        print("  (selectivity-controls: no rows, skipping)")
+        return
+
+    out_csv = OUT_DIR / "selectivity_controls.csv"
+    out_md = OUT_DIR / "selectivity_controls.md"
+
+    # Index rows by (dataset, horizon, seed, model).
+    cells = {}
+    for r in sel_rows:
+        ds = r["dataset"]
+        h = int(r["horizon"])
+        seed = int(r["seed"]) if r.get("seed") else None
+        m = r["model"]
+        mse = to_float(r["mse"])
+        mae = to_float(r["mae"])
+        if mse is None or seed is None:
+            continue
+        cells[(ds, h, seed, m)] = (mse, mae)
+
+    datasets = sorted({k[0] for k in cells})
+    horizons = sorted({k[1] for k in cells})
+    seeds = sorted({k[2] for k in cells})
+    variants = sorted(
+        {k[3] for k in cells if k[3] != "SRSNet"},
+        key=lambda x: (x != "SRSNet_RandomSP", x != "SRSNet_RandomSPNoShuffle", x),
+    )
+
+    # ---- CSV: one row per (dataset, horizon, seed, variant) ----
+    lines = [
+        ",".join(
+            [
+                "dataset",
+                "horizon",
+                "seed",
+                "model",
+                "mse_norm",
+                "mae_norm",
+                "baseline_mse_norm",
+                "delta_mse_vs_srsnet_pct",
+                "baseline_mae_norm",
+                "delta_mae_vs_srsnet_pct",
+            ]
+        )
+    ]
+    for ds in datasets:
+        for h in horizons:
+            for seed in seeds:
+                base = cells.get((ds, h, seed, "SRSNet"))
+                for v in ["SRSNet"] + variants:
+                    cell = cells.get((ds, h, seed, v))
+                    if cell is None:
+                        continue
+                    mse, mae = cell
+                    if base is None:
+                        bmse = bmae = dmse = dmae = ""
+                    else:
+                        bmse, bmae = base
+                        dmse_v = delta_pct(mse, bmse)
+                        dmae_v = delta_pct(mae, bmae)
+                        bmse = fmt(bmse)
+                        bmae = fmt(bmae)
+                        dmse = f"{dmse_v:+.2f}" if dmse_v is not None else ""
+                        dmae = f"{dmae_v:+.2f}" if dmae_v is not None else ""
+                    lines.append(
+                        ",".join(
+                            [
+                                ds,
+                                str(h),
+                                str(seed),
+                                v,
+                                fmt(mse),
+                                fmt(mae),
+                                bmse,
+                                dmse,
+                                bmae,
+                                dmae,
+                            ]
+                        )
+                    )
+    out_csv.write_text("\n".join(lines) + "\n")
+    print(f"  OK {out_csv.name}: {len(lines)-1} (cell, seed, variant) rows")
+
+    # ---- Markdown: mean +/- std per (dataset, horizon, variant) ----
+    md = [
+        "# Selectivity-controls study",
+        "",
+        "Retrained random selective-patching controls.  Each (dataset, horizon,",
+        "variant) cell is aggregated over the seeds listed in `seeds`.",
+        "",
+        "* Variants:",
+        "  * `SRSNet`                       -- learned select + learned shuffle (baseline)",
+        "  * `SRSNet_RandomSP`              -- random select, learned shuffle",
+        "  * `SRSNet_RandomSPNoShuffle`     -- random select + identity shuffle",
+        "",
+        "No verdict labels are emitted; the writeup should look at the raw mean +/- std",
+        "and the seed-level win count.",
+        "",
+    ]
+    md.append("## MSE summary (mean +/- std across seeds)")
+    md.append("")
+    header_md = (
+        "| dataset | horizon | seeds | SRSNet (baseline) | "
+        + " | ".join(f"{v} (delta% vs baseline)" for v in variants)
+        + " | wins_vs_baseline (per variant) |"
+    )
+    md.append(header_md)
+    md.append("|---|" + "---|" * (3 + len(variants) + 1))
+
+    for ds in datasets:
+        for h in horizons:
+            base_vals = [cells[(ds, h, s, "SRSNet")][0] for s in seeds if (ds, h, s, "SRSNet") in cells]
+            if not base_vals:
+                continue
+            base_mean = statistics.mean(base_vals)
+            base_std = statistics.stdev(base_vals) if len(base_vals) > 1 else 0.0
+            row = [ds, str(h), str(len(base_vals)), f"{base_mean:.4f}+/-{base_std:.4f}"]
+            wins = []
+            for v in variants:
+                v_vals = [
+                    cells[(ds, h, s, v)][0]
+                    for s in seeds
+                    if (ds, h, s, v) in cells
+                ]
+                if not v_vals:
+                    row.append("")
+                    wins.append("-")
+                    continue
+                v_mean = statistics.mean(v_vals)
+                v_std = statistics.stdev(v_vals) if len(v_vals) > 1 else 0.0
+                d = delta_pct(v_mean, base_mean)
+                d_str = f"{d:+.2f}%" if d is not None else "-"
+                row.append(f"{v_mean:.4f}+/-{v_std:.4f} ({d_str})")
+                # Seed-level win count: random control beats SRSNet on same seed
+                n_wins = sum(
+                    1
+                    for s in seeds
+                    if (ds, h, s, v) in cells
+                    and (ds, h, s, "SRSNet") in cells
+                    and cells[(ds, h, s, v)][0] < cells[(ds, h, s, "SRSNet")][0]
+                )
+                wins.append(f"{v.split('_')[-1]}={n_wins}/{len(v_vals)}")
+            row.append(", ".join(wins))
+            md.append("| " + " | ".join(row) + " |")
+
+    # Aggregate across the whole grid.
+    md.append("")
+    md.append("## Aggregate across all (dataset, horizon, seed) cells")
+    md.append("")
+    md.append("| variant | n_cells | mean_delta_mse_pct | std_delta_mse_pct | n_seeds_beating_baseline |")
+    md.append("|---|---|---|---|---|")
+    for v in variants:
+        deltas = []
+        wins = 0
+        n = 0
+        for ds in datasets:
+            for h in horizons:
+                for s in seeds:
+                    if (ds, h, s, v) not in cells:
+                        continue
+                    if (ds, h, s, "SRSNet") not in cells:
+                        continue
+                    base_mse = cells[(ds, h, s, "SRSNet")][0]
+                    v_mse = cells[(ds, h, s, v)][0]
+                    d = delta_pct(v_mse, base_mse)
+                    if d is not None:
+                        deltas.append(d)
+                        if v_mse < base_mse:
+                            wins += 1
+                        n += 1
+        if deltas:
+            mean_d = statistics.mean(deltas)
+            std_d = statistics.stdev(deltas) if len(deltas) > 1 else 0.0
+            md.append(
+                f"| {v} | {n} | {mean_d:+.2f} | {std_d:.2f} | {wins}/{n} |"
+            )
+
+    md.append("")
+    md.append("## Interpretation guidance")
+    md.append("")
+    md.append("- A mean delta MSE close to 0 with random controls means the learned")
+    md.append("  scorer is not contributing in this regime.")
+    md.append("- A clearly positive mean delta MSE (random worse than SRSNet) supports")
+    md.append("  the paper's selectivity claim with a stronger negative control than")
+    md.append("  Table 4's NoSP variant.")
+    md.append("- A negative mean delta MSE (random better than SRSNet) is a refutation")
+    md.append("  but requires checking seed-level variance before reporting.")
+    md.append("- Conclusions are scoped to the tested (datasets, horizons, seeds, hardware)")
+    md.append("  and do not generalize to other patch-based models.")
+
+    out_md.write_text("\n".join(md) + "\n")
+    print(f"  OK {out_md.name}: aggregate report written")
+
+
 def main():
     OUT_DIR.mkdir(exist_ok=True)
     rows = load_summary()
@@ -871,7 +1119,9 @@ def main():
     baseline_rows = load_baselines_summary()
     print(f"Loaded {len(baseline_rows)} completed rows from main-compat summary.csv")
     ext_rows = load_extensions_summary()
-    print(f"Loaded {len(ext_rows)} completed rows from extensions summary.csv")
+    print(f"Loaded {len(ext_rows)} completed rows from extensions summary.csv (legacy)")
+    sel_rows = load_selectivity_summary()
+    print(f"Loaded {len(sel_rows)} completed rows from selectivity-controls summary.csv")
     print()
     srsnet_cells = gen_tab2(rows)
     gen_tab3(rows)
@@ -884,13 +1134,17 @@ def main():
         gen_baselines_paper_delta(baseline_rows)
     if ext_rows:
         print()
-        print("=== Extensions tables (A+F+B+D contributions) ===")
+        print("=== Legacy extensions tables (kept for archived rows) ===")
         gen_tab2_extension(rows, ext_rows)
         gen_tab3_extension(rows, ext_rows)
         gen_tab4_extension(rows, ext_rows)
         gen_extensions_summary(rows, ext_rows)
+    if sel_rows:
+        print()
+        print("=== Selectivity-controls tables (current focused study) ===")
+        gen_selectivity_controls(sel_rows)
     print()
-    print("✅ Done.")
+    print("Done.")
 
 
 if __name__ == "__main__":

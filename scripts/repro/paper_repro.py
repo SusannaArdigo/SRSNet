@@ -27,28 +27,23 @@ PAPER_SRSNET_SEEDS = [2021, 2022, 2023, 2024, 2025]
 PAPER_BATCH_FLOOR = 8
 METRIC_SPACE = "mse_norm/mae_norm after model inverse_transform, normalized by the evaluator train split scaler"
 
-# --- "extensions" scope ----------------------------------------------------
-# Reproduction-as-contribution: 4 new SRS variants implemented in
-# ts_benchmark.baselines.srs_paper.extensions.  Each tackles a Future Work
-# or Limitation from Sec. 6 of the SRSNet paper.
-EXTENSION_ETT_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
-EXTENSION_ABLATION_DATASETS = ["ETTh1", "ETTm2"]  # match Tab.3/Tab.4 paper scope
-EXTENSION_TAB2_VARIANTS = [
-    "SRSNet_GAF",   # A. Gated Adaptive Fusion (FW#3 + L4)
-    "SRSNet_DDA",   # B. Data-driven alpha init (L4)
-    "SRSNet_MSP",   # D. Multi-scale Selective Patching (FW#1)
+# --- "selectivity-controls" scope ------------------------------------------
+# Focused control study replacing the earlier broad extension set
+# (DDA / MSP / GAF / RandomSRS).  See
+# ``scripts/repro/selectivity_extension_plan.md`` for the design discussion.
+#
+# Small grid (default): 2 datasets x 2 horizons x 5 seeds x 3 variants = 60 task.
+# Extends to the full ETT grid only after the small grid shows a useful signal.
+SELECTIVITY_DATASETS_SMALL = ["ETTh1", "ETTm2"]
+SELECTIVITY_HORIZONS_SMALL = [96, 720]
+SELECTIVITY_DATASETS_FULL = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
+SELECTIVITY_HORIZONS_FULL = [96, 192, 336, 720]
+SELECTIVITY_SEEDS = [2021, 2022, 2023, 2024, 2025]
+SELECTIVITY_VARIANTS = [
+    None,  # baseline: original SRSNet (kept in manifest for explicit comparison)
+    "srs_paper.SRSNet_RandomSP",
+    "srs_paper.SRSNet_RandomSPNoShuffle",
 ]
-EXTENSION_TAB4_VARIANTS = [
-    "SRSNet_GAF",       # ablation of AF (vs paper NoAF)
-    "SRSNet_RandomSRS", # F. random patches (selectivity sanity check)
-]
-EXTENSION_TAB3_VARIANTS = [
-    "SRSNet_DDA",   # check if DDA restores plug-in benefit
-]
-
-# Per-dataset alpha precomputed by tools/compute_dda_alpha.py.  Loaded
-# lazily so the file is optional at import time.
-DDA_ALPHA_PATH = ROOT / "tools" / "dda_alpha_values.json"
 
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
 # Each rule is a dict; a task matches a rule if ALL listed fields equal the
@@ -430,105 +425,43 @@ def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq
     return tasks
 
 
-def _load_dda_alpha_map():
-    """Return {dataset: alpha} computed offline by tools/compute_dda_alpha.py.
+def _selectivity_controls_tasks(scope, gpu, grid):
+    """Selectivity-controls retrained study (Experiment 2 in the plan).
 
-    Returns an empty dict if the file is missing; callers must handle the
-    fallback (typically by falling back to the script's default alpha).
+    Generates 5-seed retrained runs for each of three variants:
+
+        * SRSNet (baseline, learned select + learned shuffle)
+        * srs_paper.SRSNet_RandomSP (random select, learned shuffle)
+        * srs_paper.SRSNet_RandomSPNoShuffle (random select, identity shuffle)
+
+    ``grid`` is either ``"small"`` (default: 2 datasets x 2 horizons x 5 seeds)
+    or ``"full"`` (4 datasets x 4 horizons x 5 seeds).
     """
-    if not DDA_ALPHA_PATH.exists():
-        return {}
-    try:
-        return json.loads(DDA_ALPHA_PATH.read_text())
-    except json.JSONDecodeError:
-        return {}
+    if grid not in ("small", "full"):
+        raise ValueError(f"selectivity grid must be 'small' or 'full', got {grid!r}")
+    if grid == "small":
+        datasets = SELECTIVITY_DATASETS_SMALL
+        horizons_filter = set(SELECTIVITY_HORIZONS_SMALL)
+    else:
+        datasets = SELECTIVITY_DATASETS_FULL
+        horizons_filter = set(SELECTIVITY_HORIZONS_FULL)
 
-
-def _extension_tab2_tasks(scope, gpu):
-    """Tab.2 extension: GAF / DDA / MSP on 4 ETT x 4 horizons."""
     tasks = []
-    dda_alpha = _load_dda_alpha_map()
-    for variant in EXTENSION_TAB2_VARIANTS:
-        for dataset in EXTENSION_ETT_DATASETS:
-            overrides = None
-            if variant == "SRSNet_DDA":
-                alpha = dda_alpha.get(dataset)
-                if alpha is None:
-                    # Without a precomputed value DDA collapses to the
-                    # script default; emit a placeholder so the gap is
-                    # visible in summaries.
-                    for horizon in PAPER_HORIZONS:
-                        tasks.append(
-                            Task(
-                                f"table2_extension_{dataset}_H{horizon}_{variant}_missing_alpha",
-                                "table2_extension",
-                                dataset,
-                                horizon,
-                                variant,
-                                [],
-                                "",
-                                status="reference-only",
-                                note=(
-                                    f"DDA alpha for {dataset} missing; run "
-                                    "tools/compute_dda_alpha.py first."
-                                ),
-                            )
-                        )
-                    continue
-                overrides = {"alpha": float(alpha)}
-            tasks.extend(
-                _official_tasks_for(
-                    dataset,
-                    "SRSNet",
-                    scope=scope,
-                    table="table2_extension",
-                    gpu=gpu,
-                    model_name=f"srs_paper.{variant}",
-                    adapter=None,
-                    hyper_overrides=overrides,
-                )
-            )
-    return tasks
-
-
-def _extension_tab4_tasks(scope, gpu):
-    """Tab.4 extension: GAF (vs NoAF) + RandomSRS on ETTh1+ETTm2."""
-    tasks = []
-    for variant in EXTENSION_TAB4_VARIANTS:
-        for dataset in EXTENSION_ABLATION_DATASETS:
-            tasks.extend(
-                _official_tasks_for(
-                    dataset,
-                    "SRSNet",
-                    scope=scope,
-                    table="table4_extension",
-                    gpu=gpu,
-                    model_name=f"srs_paper.{variant}",
-                    adapter=None,
-                )
-            )
-    return tasks
-
-
-def _extension_tab3_tasks(scope, gpu):
-    """Tab.3 extension: DDA used as plug-in (SRSNet_DDA vs SRSNet_NoSRS)."""
-    tasks = []
-    dda_alpha = _load_dda_alpha_map()
-    for dataset in EXTENSION_ABLATION_DATASETS:
-        alpha = dda_alpha.get(dataset)
-        overrides = {"alpha": float(alpha)} if alpha is not None else None
-        tasks.extend(
-            _official_tasks_for(
+    for dataset in datasets:
+        for model_name in SELECTIVITY_VARIANTS:
+            # ``model_name=None`` => baseline SRSNet, no --model-name override.
+            built = _official_tasks_for(
                 dataset,
                 "SRSNet",
                 scope=scope,
-                table="table3_extension",
+                table="selectivity_controls",
                 gpu=gpu,
-                model_name="srs_paper.SRSNet_DDA",
-                adapter=None,
-                hyper_overrides=overrides,
+                seeds=tuple(SELECTIVITY_SEEDS),
+                model_name=model_name,
+                adapter=None if model_name is not None else "__KEEP__",
             )
-        )
+            # Restrict to the requested horizon subset.
+            tasks.extend(t for t in built if t.horizon in horizons_filter)
     return tasks
 
 
@@ -540,10 +473,12 @@ def build_tasks(scope, gpu):
                 tasks.extend(_official_tasks_for(dataset, model, scope=scope, table="main_compat", gpu=gpu))
         return tasks
 
-    if scope == "extensions":
-        tasks.extend(_extension_tab2_tasks(scope, gpu))
-        tasks.extend(_extension_tab4_tasks(scope, gpu))
-        tasks.extend(_extension_tab3_tasks(scope, gpu))
+    if scope == "selectivity-controls":
+        tasks.extend(_selectivity_controls_tasks(scope, gpu, grid="small"))
+        return tasks
+
+    if scope == "selectivity-controls-full":
+        tasks.extend(_selectivity_controls_tasks(scope, gpu, grid="full"))
         return tasks
 
     srs_seeds = PAPER_SRSNET_SEEDS if scope == "full-paper" else (2021,)
@@ -1234,7 +1169,20 @@ def smoke_check(scope, dataset, horizon, tolerance_mse, tolerance_mae):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["manifest", "run", "collect", "dry-coverage", "check-data", "check-stale-results", "smoke-check"])
-    parser.add_argument("--scope", default="lite-paper", choices=["lite-paper", "full-paper", "main-compat", "extensions"])
+    parser.add_argument(
+        "--scope",
+        default="lite-paper",
+        choices=[
+            "lite-paper",
+            "full-paper",
+            "main-compat",
+            # The earlier broad "extensions" scope (DDA/MSP/GAF/RandomSRS) was
+            # retired in favour of the focused selectivity-controls study;
+            # see scripts/repro/selectivity_extension_plan.md.
+            "selectivity-controls",
+            "selectivity-controls-full",
+        ],
+    )
     parser.add_argument("--gpu", default=os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--force", action="store_true")
