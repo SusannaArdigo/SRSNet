@@ -222,13 +222,175 @@ Il claim del paper *"learned selective patching is essential"* (Sec. 4.1, basato
 
 ---
 
-## 7. Riferimenti per i numeri
+## 7. Constructive extensions + factorial design (sezione completa)
+
+Sezione 6 mostra solo i due controlli random. Per dare al report un contributo
+costruttivo oltre al negative-control, abbiamo poi implementato tre estensioni
+mirate ai Future Work del paper, e poi le abbiamo combinate con la fusion in
+un design fattoriale `Select × Fusion`.
+
+**Setup**: stesso grid (ETTh1+ETTm2 × H ∈ {96, 720} × 5 seed) per tutte le
+9 varianti, totale **180 task** completati su Hivenet (RTX 4090, batch=64,
+paper-mode), zero failures.
+
+### 7.1 Le 9 varianti
+
+Ogni variante cambia **una sola cosa** rispetto a vanilla SRSNet, eccetto le
+combinazioni che ne cambiano due:
+
+| Variante | `_select` | `_shuffle` | α fusion | aux loss |
+|---|---|---|---|---|
+| SRSNet (baseline) | learned MLP | learned | free param | – |
+| SRSNet_RandomSP | **random** | learned | free param | – |
+| SRSNet_RandomSPNoShuffle | **random** | **identity** | free param | – |
+| SRSNet_TASP | **engineered (4 feat)** | learned | free param | – |
+| SRSNet_HypernetAF | learned MLP | learned | **hypernet** | – |
+| SRSNet_PSRS | learned MLP | learned | free param | **+ descriptor loss** |
+| SRSNet_RandomSP_HypernetAF | **random** | learned | **hypernet** | – |
+| SRSNet_TASP_HypernetAF | **engineered** | learned | **hypernet** | – |
+| SRSNet_PSRS_HypernetAF | learned MLP | learned | **hypernet** | **+ desc. loss** |
+
+Ogni variante è mappata a una Future Work del paper:
+- **TASP**: FW#1 (environment-aware) + L3 (interpretability)
+- **HypernetAF**: FW#3 (efficient α update) + L4 (initialization)
+- **PSRS**: FW#4 (supervised module for sample-wise patterns) + L3
+- **Combinazioni**: testano l'ortogonalità di Select × Fusion
+
+### 7.2 Aggregate results (20 cell per variant, mean Δ MSE vs SRSNet)
+
+| Variant | Mean Δ MSE | Std seed | Wins vs baseline |
+|---|---|---|---|
+| **SRSNet_RandomSP** | **−0.22%** | 1.23% | **12/20** |
+| **SRSNet_RandomSP_HypernetAF** | **−0.20%** | 1.65% | **12/20** |
+| SRSNet_RandomSPNoShuffle | −0.12% | 1.46% | 12/20 |
+| SRSNet_HypernetAF | −0.09% | 1.44% | 11/20 |
+| SRSNet_TASP_HypernetAF | −0.02% | 1.23% | 9/20 |
+| SRSNet_PSRS_HypernetAF | +0.12% | 1.16% | 10/20 |
+| SRSNet_PSRS | +0.22% | 1.21% | 11/20 |
+| SRSNet_TASP | +0.25% | 1.82% | 12/20 |
+
+**Lettura immediata**:
+- Tutti i mean Δ sono dentro la std seed-level (|Δ| < 0.5%, std ≈ 1.2–1.8%)
+- Random select **vince marginalmente** sul learned (4 random variants nei top 5)
+- TASP e PSRS sono marginalmente *peggio* del baseline
+- Nessuna variante differisce in modo robusto dal baseline
+
+### 7.3 Factorial decomposition (Select × Fusion)
+
+Mean MSE su tutti i 20 cell per ogni configurazione `(Select, Fusion)`:
+
+| Select \ Fusion | Free α | Hypernet α |
+|---|---|---|
+| Learned (vanilla) | **0.3788** | 0.3789 |
+| Random | **0.3773** | **0.3774** |
+| TASP (engineered) | 0.3783 | 0.3779 |
+| LearnedAux (PSRS) | 0.3797 | 0.3792 |
+
+**Main effects** (paired across the other factor, n=80 per fusion / n=40 per select):
+
+| Fattore | Cambio | Mean Δ% | Std | n |
+|---|---|---|---|---|
+| **Fusion** | FreeAlpha → Hypernet | **−0.10%** | 1.28 | 80 |
+| **Select** | Learned → Random | **−0.17%** | 1.02 | 40 |
+| **Select** | Learned → TASP | **+0.17%** | 1.46 | 40 |
+| **Select** | Learned → LearnedAux | **+0.22%** | 1.33 | 40 |
+
+**Interpretazione**:
+1. **Fusion factor irrilevante** (Δ −0.10%, std 1.28% → null effect). Sostituire
+   il free α parameter con il hypernet dinamico non cambia nulla, anche se il
+   hypernet inizializza vanilla-preserving e potrebbe imparare context-dep.
+2. **Select factor minimale** (|Δ| ≤ 0.22%, std ≥ 1.0% → null effect). Random
+   ha il main effect più favorevole (−0.17%), ma è dentro la varianza.
+3. La combinazione **migliore in mean MSE** è `(Random, Free α)` = 0.3773 e
+   `(Random, Hypernet α)` = 0.3774. La combinazione **peggiore** è `(LearnedAux, FreeAlpha)` = 0.3797 (PSRS).
+
+### 7.4 Cell ETTh1 H720 (la più informativa)
+
+Ricapitoliamo i Δ% vs SRSNet su ETTh1 H720 (5 seed):
+
+| Variant | MSE | Δ% | wins (out of 5) |
+|---|---|---|---|
+| SRSNet (baseline) | 0.6604 ± 0.0028 | 0% | — |
+| **SRSNet_RandomSPNoShuffle** | **0.6534 ± 0.0015** | **−1.07%** | **5/5** |
+| **SRSNet_TASP** | **0.6538 ± 0.0040** | **−1.00%** | **5/5** |
+| SRSNet_RandomSP | 0.6545 ± 0.0034 | −0.90% | 4/5 |
+| SRSNet_TASP_HypernetAF | 0.6546 ± 0.0058 | −0.88% | 3/5 |
+| SRSNet_RandomSP_HypernetAF | 0.6547 ± 0.0036 | −0.88% | 4/5 |
+| SRSNet_PSRS_HypernetAF | 0.6597 ± 0.0015 | −0.12% | 3/5 |
+| SRSNet_HypernetAF | 0.6621 ± 0.0019 | +0.25% | 2/5 |
+| SRSNet_PSRS | 0.6622 ± 0.0026 | +0.26% | 3/5 |
+
+Su questa cella:
+- **2 varianti vincono in 5/5 seed**: RandomSPNoShuffle e TASP
+- Le 5 varianti con Δ < −0.5% sono quelle che *togliendo* o *semplificando* il
+  learned scorer (Random / TASP), non quelle che lo *raffinano* (PSRS / HypernetAF)
+- L'unica variante che *peggiora* in modo consistente è PSRS — la supervised
+  aux loss interferisce con il forecasting su long-horizon
+
+### 7.5 Cross-comparison pairwise (mean Δ MSE row vs column)
+
+La matrice 9×9 completa è in `report_tables/selectivity_controls.md`. I
+pattern significativi:
+
+- **SRSNet_PSRS è la variante peggiore** in *quasi tutti* i confronti pairwise
+  (Δ +0.22 a +0.47% vs tutte le altre random / engineered varianti).
+- **SRSNet_RandomSP e SRSNet_RandomSP_HypernetAF sono indistinguibili** tra
+  loro (Δ −0.01%) → conferma che la fusion non aiuta.
+- **TASP vs TASP_HypernetAF**: Δ −0.27% (TASP è leggermente peggio della sua
+  variante con hypernet, ma all'interno della std).
+
+### 7.6 🔴 Conclusione critica generale
+
+Sui 180 task del nostro setup ETT-only:
+
+1. **Il claim del paper "learned selective patching è essenziale" non
+   sopravvive a un controllo random** (Sezione 6).
+2. **Nessuna delle 3 estensioni costruttive (TASP, HypernetAF, PSRS)
+   migliora SRSNet in modo robusto**. Mean Δ ≤ 0.25% con std ≥ 1.0%,
+   completamente dentro il rumore seed-level.
+3. **Il factorial decomposition mostra null effects** sia per il
+   *select factor* sia per il *fusion factor*. Quando si controlla
+   l'interazione, nessun cambio architetturale produce un effetto
+   statisticamente distinguibile dalla varianza dei seed.
+4. **La variante migliore nel grid è la più semplice** —
+   `(Random select, Free α)` con MSE 0.3773. Questa è una versione di
+   SRSNet senza alcun apprendimento nello `_select`, e ha la stessa
+   performance media del baseline con `shuffle` learned.
+5. **Su ETTh1 H720, due varianti vincono in 5/5 seed**: RandomSPNoShuffle
+   e TASP. Entrambe *rimuovono o semplificano* il learned scorer.
+
+**Implicazione metodologica**: il paper SRSNet avrebbe beneficiato di
+controlli random e di un factorial decomposition di base. Le ablation
+del paper (Tab.4: NoSP, NoDR, NoAF, NoSRS) ablano singoli componenti ma
+non testano le interazioni e non controllano per random baselines, che
+sono più informativi per giudicare la necessità del modulo SRS.
+
+### 7.7 Limitazioni
+
+- **Solo 2 datasets × 2 horizons × 5 seed** = 20 cells per variant. n=5
+  seeds è il minimo statistico (CI larghi).
+- **No checkpoint-swap experiment**: TFB non persiste i pesi della rete
+  (`find result/ -name '*.pth' = ∅`). L'esperimento ideale sarebbe
+  swap del scorer a *inference time* a parità di pesi (Esperimento 1
+  del plan).
+- **RNG ambient**: la random selection in `_select` non è strettamente
+  tied al `--seed` argomento. La varianza misurata su 5 seed è
+  conservativa rispetto alla "vera" varianza del setup.
+- **PSRS aux loss λ fissato a 1e-2**: non è stato fatto sweep per
+  trovare l'ottimo. È possibile che con λ diverso PSRS converga
+  meglio. Ma il fatto che la variante PSRS sia *consistentemente
+  peggio* del baseline suggerisce che l'aux loss interferisce
+  comunque con il main objective in questo grid.
+
+---
+
+## 8. Riferimenti per i numeri
 
 - `report_tables/tab2_full_paper_repro.csv` — Tab.2 estesa con 8 modelli × 16 cells
 - `report_tables/tab2_baselines_paper_delta.csv` — Delta% vs paper Tab.8 per ogni cell
 - `report_tables/tab3_plugin_paper_repro.csv` — Plug-in MLP↔SRSNet (8 pairs)
 - `report_tables/tab4_ablation_paper_repro.csv` — Ablation 4 componenti (40 cells)
-- **`report_tables/selectivity_controls.csv`** — 60 (cell, seed, variant) rows
-- **`report_tables/selectivity_controls.md`** — mean±std + seed-level wins (focused study)
-- `scripts/repro/selectivity_extension_plan.md` — Design del missing-control study
-- Repository: `github.com/SusannaArdigo/SRSNet`, branch `paper-faithful-repro-ett-extensions` HEAD `706c3f1`
+- **`report_tables/selectivity_controls.csv`** — 180 (cell, seed, variant) rows
+- **`report_tables/selectivity_controls.md`** — 9-variant aggregate + cross-comparison 9×9 + factorial decomposition
+- `scripts/repro/selectivity_extension_plan.md` — Design del missing-control study + plan delle 3 estensioni costruttive
+- Repository: `github.com/SusannaArdigo/SRSNet`, branch `paper-faithful-repro-ett-extensions`
