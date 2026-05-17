@@ -22,6 +22,11 @@ DATASET_ROOT = ROOT / "dataset" / "forecasting"
 PAPER_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2", "Weather", "Electricity", "Solar", "Traffic"]
 PAPER_HORIZONS = [96, 192, 336, 720]
 PAPER_PLUGIN_DATASETS = ["ETTh1", "ETTm2", "Solar", "Traffic"]
+# Our extended grid for Tab.3 (plug-in) and Tab.4 (ablation) under
+# lite-paper.  The original paper uses ETTh1 + ETTm2; we extend to all
+# four ETT datasets to halve the per-cell uncertainty without
+# triggering the heavy Solar / Traffic plug-in tasks.
+ETT_LITE_PAPER_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
 PAPER_LOOKBACKS = [96, 336, 512]
 PAPER_SRSNET_SEEDS = [2021, 2022, 2023, 2024, 2025]
 PAPER_BATCH_FLOOR = 8
@@ -495,7 +500,14 @@ def build_tasks(scope, gpu):
     for dataset in PAPER_DATASETS:
         tasks.extend(_official_tasks_for(dataset, "SRSNet", scope=scope, table="table2_srsnet", gpu=gpu, seeds=srs_seeds, seq_lens=srs_seq_lens))
 
-    ablation_datasets = PAPER_PLUGIN_DATASETS
+    # Tab.4 ablation: original paper runs ETTh1 + ETTm2.  We extend to
+    # the four ETT datasets under lite-paper to double the per-cell
+    # coverage (40 -> 80 cells).  full-paper keeps the original grid
+    # that also includes Solar / Traffic.
+    if scope == "lite-paper":
+        ablation_datasets = ETT_LITE_PAPER_DATASETS
+    else:
+        ablation_datasets = PAPER_PLUGIN_DATASETS
     for dataset in ablation_datasets:
         tasks.extend(_official_tasks_for(dataset, "SRSNet", scope=scope, table="table4_ablation", gpu=gpu))
     ablation_models = ["SRSNet_NoSRS", "SRSNet_NoSP", "SRSNet_NoDR", "SRSNet_NoAF"]
@@ -513,7 +525,14 @@ def build_tasks(scope, gpu):
                 )
             )
 
-    plugin_datasets = PAPER_PLUGIN_DATASETS
+    # Tab.3 plug-in: same logic for the SRSNet/NoSRS pair, but Solar
+    # and Traffic still appear for the heavy plug-ins (PatchTST+SRS,
+    # Crossformer+SRS, ...).  We unify the SRSNet/NoSRS pair to the
+    # 4 ETT under lite-paper and keep PAPER_PLUGIN_DATASETS otherwise.
+    if scope == "lite-paper":
+        plugin_datasets = ETT_LITE_PAPER_DATASETS
+    else:
+        plugin_datasets = PAPER_PLUGIN_DATASETS
     plugin_pairs = [(base, plus, None) for base, plus in PLUGIN_MODELS]
     for dataset in plugin_datasets:
         for base_model, plus_model, adapter in plugin_pairs:
