@@ -1,0 +1,137 @@
+\appendix
+
+\section{Full selectivity-controls table}
+\label{app:selectivity-table}
+
+Table~\ref{tab:selectivity-cells} reports the per-cell mean and
+seed-level standard deviation of the MSE for all nine variants in
+the small-grid study (Section~\ref{sec:results-ext}). Cells written
+in bold beat the SRSNet baseline on $4$ or $5$ of the $5$ seeds.
+
+\begin{table}[h]
+  \caption{Per-cell mean MSE $\pm$ seed std across $5$ seeds for the
+    nine selectivity-controls variants. Boldface indicates a cell
+    that beats SRSNet on $\ge 4$ of $5$ seeds.}
+  \label{tab:selectivity-cells}
+  \scriptsize
+  \begin{center}
+  \begin{tabular}{lcccc}
+    \toprule
+    Variant & ETTh1/96 & ETTh1/720 & ETTm2/96 & ETTm2/720 \\
+    \midrule
+    SRSNet (baseline)            & $0.4360\pm0.0006$ & $0.6604\pm0.0028$ & $0.1481\pm0.0011$ & $0.2708\pm0.0060$ \\
+    SRSNet\_RandomSP             & $0.4360\pm0.0004$ & $\mathbf{0.6545\pm0.0034}$ & $0.1482\pm0.0009$ & $0.2706\pm0.0014$ \\
+    SRSNet\_RandomSPNoShuffle    & $0.4361\pm0.0002$ & $\mathbf{0.6534\pm0.0015}$ & $0.1486\pm0.0004$ & $0.2714\pm0.0033$ \\
+    SRSNet\_TASP                 & $0.4365\pm0.0005$ & $\mathbf{0.6538\pm0.0040}$ & $0.1491\pm0.0015$ & $0.2739\pm0.0034$ \\
+    SRSNet\_HypernetAF           & $0.4361\pm0.0004$ & $0.6621\pm0.0019$ & $\mathbf{0.1477\pm0.0002}$ & $0.2697\pm0.0025$ \\
+    SRSNet\_PSRS                 & $0.4361\pm0.0006$ & $0.6622\pm0.0026$ & $0.1482\pm0.0005$ & $0.2722\pm0.0071$ \\
+    SRSNet\_RandomSP\_HypernetAF & $0.4361\pm0.0001$ & $\mathbf{0.6547\pm0.0036}$ & $0.1481\pm0.0002$ & $0.2707\pm0.0034$ \\
+    SRSNet\_TASP\_HypernetAF     & $0.4371\pm0.0006$ & $0.6546\pm0.0058$ & $0.1483\pm0.0003$ & $0.2717\pm0.0014$ \\
+    SRSNet\_PSRS\_HypernetAF     & $0.4363\pm0.0005$ & $0.6597\pm0.0015$ & $0.1477\pm0.0002$ & $0.2730\pm0.0074$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Cross-comparison matrix}
+\label{app:cross-comparison}
+
+Table~\ref{tab:cross-comparison} reports the full pairwise mean
+$\Delta$MSE between every pair of variants. Positive values indicate
+that the row variant is worse than the column variant on average.
+All off-diagonal cells are within $\pm 0.5$\%, well inside the
+seed-level standard deviation of $1$--$1.8$\%.
+
+\begin{table}[h]
+  \caption{Pairwise cross-comparison of mean $\Delta$MSE (row vs
+    column, \%). Averaged over $20$ cells per variant. Most cells
+    are inside $\pm 0.5$\%, all are inside the seed-level
+    standard deviation band.}
+  \label{tab:cross-comparison}
+  \scriptsize
+  \setlength{\tabcolsep}{3pt}
+  \begin{center}
+  \begin{tabular}{l|ccccccccc}
+    \toprule
+    Row vs Col & SRSNet & RSP & RSPNS & HypAF & PSRS & PSRSHyp & RSPHyp & TASP & TASPHyp \\
+    \midrule
+    SRSNet                       & -- & +0.24 & +0.14 & +0.11 & -0.20 & -0.11 & +0.23 & -0.22 & +0.03 \\
+    SRSNet\_RandomSP             & -0.22 & -- & -0.10 & -0.12 & -0.43 & -0.34 & -0.01 & -0.46 & -0.20 \\
+    SRSNet\_RandomSPNoShuffle    & -0.12 & +0.10 & -- & -0.02 & -0.32 & -0.23 & +0.09 & -0.36 & -0.10 \\
+    SRSNet\_HypernetAF           & -0.09 & +0.13 & +0.03 & -- & -0.30 & -0.21 & +0.12 & -0.33 & -0.07 \\
+    SRSNet\_PSRS                 & +0.22 & +0.45 & +0.35 & +0.32 & -- & +0.11 & +0.44 & -0.01 & +0.25 \\
+    SRSNet\_PSRS\_HypernetAF     & +0.12 & +0.36 & +0.26 & +0.23 & -0.08 & -- & +0.35 & -0.10 & +0.15 \\
+    SRSNet\_RandomSP\_HypernetAF & -0.20 & +0.01 & -0.09 & -0.11 & -0.42 & -0.32 & -- & -0.45 & -0.19 \\
+    SRSNet\_TASP                 & +0.25 & +0.47 & +0.37 & +0.35 & +0.04 & +0.14 & +0.46 & -- & +0.27 \\
+    SRSNet\_TASP\_HypernetAF     & -0.02 & +0.20 & +0.10 & +0.08 & -0.23 & -0.14 & +0.20 & -0.26 & -- \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\section{Implementation details}
+\label{app:implementation}
+
+All extension layers are defined in
+\verb|ts_benchmark/baselines/srs_paper/extensions.py| in our fork.
+They inherit from the original \texttt{SRS} class of
+\citet{wu2025srsnet} and override exactly one method:
+
+\begin{itemize}
+  \item \texttt{SRSRandomSP.\_select}: replaces
+    \texttt{torch.argmax} on the scorer's output with a
+    \texttt{torch.randint} over the candidate dimension.
+  \item \texttt{SRSRandomSPNoShuffle.\_shuffle}: returns its input
+    unchanged (identity shuffle).
+  \item \texttt{SRSTimeAware.\_select}: computes per-window FFT
+    magnitude, autocorrelation, variance, and trend slope; the
+    scorer is a $4{\to}16{\to}n$ MLP over those features.
+  \item \texttt{SRSHypernetAF.forward}: zero-initialised hypernet
+    plus bias $=3.5$ produces the fusion weights from a
+    batch-level mean of the original-view embedding.
+  \item \texttt{SRSPatternSupervised.\_select}: same selection
+    logic as the baseline; a side head over the first scorer
+    hidden activation predicts a 3-vector of engineered
+    descriptors; the auxiliary loss is exposed via
+    \texttt{last\_aux\_loss}.
+\end{itemize}
+
+The three factorial combinations are produced by a small factory
+function \verb|_make_hypernet_combo(base_select_cls, name)| that
+composes a base \texttt{\_select} variant with the Hypernet-AF
+fusion. Because the runner skips already-completed metadata files,
+the small-grid study is fully resume-aware.
+
+The runner exposes the variants through a single scope
+\texttt{selectivity-controls} in
+\verb|scripts/repro/paper_repro.py|.  The same scope produces both
+the $120$-task Phase~1 (the first six variants) and the $180$-task
+total (after adding the three factorial combinations); the resume
+behaviour means re-running with the extended list of variants
+trains only the missing cells.
+
+\section{Hyper-parameters}
+\label{app:hyperparams}
+
+All variants share the SRSNet hyper-parameters extracted from the
+vendor shell scripts:
+
+\begin{itemize}
+  \item \texttt{patch\_len}: $24$ (ETTh) or $16$ / $12$ (ETTm
+    horizons, per vendor scripts).
+  \item \texttt{seq\_len}: $512$.
+  \item \texttt{d\_model}: $256$.
+  \item \texttt{dropout}: $0.1$.
+  \item \texttt{alpha} (initial value of the fusion parameter):
+    $3.5$ for Free-$\alpha$ variants; same value used for the
+    bias of the Hypernet-AF output.
+  \item \texttt{lr}: $10^{-4}$, $\texttt{lradj}$=\texttt{type1}.
+  \item \texttt{patience}: $5$ or $10$ depending on horizon.
+  \item Paper-faithful overrides applied uniformly:
+    \texttt{batch\_size=64}, \texttt{train\_drop\_last=false},
+    \texttt{num\_workers=0}.
+\end{itemize}
+
+The auxiliary-loss scaling factor of PS-SRS is
+$\lambda_\text{aux}=10^{-2}$; no sweep over $\lambda_\text{aux}$
+was performed in this report.

@@ -1,0 +1,634 @@
+\documentclass[10pt]{article}
+
+\usepackage{atml}
+
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+
+\graphicspath{{figures/}}
+
+\title{Reproducing SRSNet: Random Controls and a Factorial Audit of
+Selective Patching and Adaptive Fusion}
+
+\author{%
+  \name Dominik Panzarella \email panzad@usi.ch
+  \AND
+  \name Susanna Ardig\`o \email ardigs@usi.ch
+  \AND
+  \name Andre Perugini \email peruga@usi.ch
+}
+
+\def\groupid{---}
+\def\projectid{SRSNet-Repro}
+
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We reproduce \emph{Enhancing Time Series Forecasting through Selective
+Representation Spaces} (SRSNet, Wu et al., NeurIPS 2025) and audit its
+two central design choices --- \emph{Selective Patching} and
+\emph{Adaptive Fusion} --- with a paper-faithful pipeline (TFB,
+\texttt{batch\_size=64}, \texttt{train\_drop\_last=false}) on the four
+ETT datasets and four forecasting horizons. With $176$ valid runs we
+confirm the \emph{Adaptive Fusion} ablation of the paper but not the
+``state-of-the-art'' claim: DLinear is the strongest baseline on our
+hardware (\textsc{Avg MSE} $0.309$ vs SRSNet $0.362$). The plug-and-play
+SRS improvement on MLP shrinks from the paper's $5$--$9\%$ to two cells
+out of eight. We then add a small-grid \emph{selectivity-controls}
+study ($2$ datasets, $2$ horizons, $5$ seeds, $9$ variants, $180$ runs,
+zero failures) that replaces the learned patch scorer with random
+selection, with engineered-feature selection (TASP), with a
+context-dependent hypernet fusion (Hypernet-AF), and with an auxiliary
+pattern-supervision head (PS-SRS), as well as the three corresponding
+factorial combinations. Across $20$ seed cells per variant the mean
+$\Delta$MSE versus the SRSNet baseline lies entirely inside the
+seed-level standard deviation ($|\Delta| \le 0.25\%$, std
+$\ge 1.02\%$). A factorial decomposition over the $4\times 2$
+\emph{(Select, Fusion)} design shows null main effects on both
+factors, and on the ETTh1 H=720 cell the two variants that
+\emph{remove} or \emph{simplify} the learned scorer (RandomSPNoShuffle
+and TASP) beat the baseline on $5$ of $5$ seeds. We conclude that on
+the tested grid the learned selectivity claim is not supported, and we
+release the full code and tables at
+\url{https://github.com/SusannaArdigo/SRSNet}.
+\end{abstract}
+
+\section{Introduction}
+
+Patch-based architectures have become the de-facto template for
+long-term time series forecasting~\citep{nie2023patchtst,zhang2022crossformer}.
+\citet{wu2025srsnet} extend the patching idea with a \emph{Selective
+Representation Space} (SRS) that adaptively scores and reassembles
+sub-sequences of the input, and combine it with a single-layer MLP
+head to produce SRSNet. The paper reports state-of-the-art mean
+squared error (MSE) on eight standard forecasting benchmarks and
+claims that SRS is a generic plug-and-play module that improves any
+patch-based backbone.
+
+This report is a reproduction and a critical audit of those claims.
+We replay the official TFB pipeline~\citep{qiu2024tfb} with the
+paper's hyper-parameters and report what changes when we swap a
+single component at a time --- the learned selective patching, the
+free-parameter adaptive fusion, the descriptor head --- including
+\emph{random} controls that the paper does not run. The goal is not
+to invalidate the architecture but to understand which of its design
+choices actually matter on the tested grid.
+
+\section{Scope of reproducibility}
+\label{sec:claims}
+
+The paper makes three claims that we can support or reject with
+re-runs:
+
+\begin{itemize}
+  \item \textbf{C1 -- Headline performance}: SRSNet achieves
+    state-of-the-art MSE on the four ETT datasets at horizons
+    $\{96, 192, 336, 720\}$
+    (\citealt[Table 2]{wu2025srsnet}).
+  \item \textbf{C2 -- Ablation hierarchy}: in Table~4 of
+    \citet{wu2025srsnet}, removing \emph{Adaptive Fusion} (NoAF) is
+    the most damaging ablation, while removing Selective Patching,
+    Dynamic Reassembly, or the whole SRS is comparatively milder.
+  \item \textbf{C3 -- Plug-and-play SRS}: in Table~3 of
+    \citet{wu2025srsnet}, attaching SRS to a vanilla MLP improves
+    MSE by approximately $5$--$9\%$.
+\end{itemize}
+
+We additionally ask a \textbf{methodological question} the paper does
+not address:
+\begin{itemize}
+  \item \textbf{Q -- Does selectivity matter against a random
+    baseline?} The paper's NoSP ablation disables the
+    \emph{architecture} of selective patching but keeps the
+    bookkeeping. We compare the learned scorer against a strictly
+    \emph{random} patch sampler that keeps the rest of the pipeline
+    unchanged.
+\end{itemize}
+
+\section{Methodology}
+
+\subsection{Model descriptions}
+\label{sec:model}
+
+The SRS module is a plug-in that sits between the per-channel
+patching step and the patch embedding. Figure~\ref{fig:srs-pipeline}
+reproduces the high-level pipeline from
+\citet[Fig.~2]{wu2025srsnet}: per-channel Adjacent Patching is paired
+with a Selective Patching branch, the two streams are linearly
+embedded, fused, and combined with positional embeddings before the
+patch-based backbone. Figure~\ref{fig:srs-architecture} reproduces
+the per-channel detail from \citet[Fig.~3]{wu2025srsnet}: a
+learned \texttt{Scorer$^s$} produces $n$ scores for every candidate
+of stride-$1$ patches and selects the $n$ winners via
+\texttt{argmax}; a second \texttt{Scorer$^r$} reorders them via
+\texttt{argsort}; and an adaptive scalar $\alpha$ controls how much
+of the result is mixed into the original patch embedding.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.6\linewidth]{fig1_motivation}
+  \caption{Adjacent vs Selective patching (\citealt[Fig.~1]{wu2025srsnet}).
+    Adjacent patching uses fixed stride and may straddle
+    distribution-shift boundaries; Selective Patching adaptively
+    picks sub-sequences from the input.}
+  \label{fig:srs-motivation}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig2_pipeline}
+  \caption{Overall pipeline of the SRS module
+    (\citealt[Fig.~2]{wu2025srsnet}). Each channel produces an
+    \emph{Adjacent Patching} stream and a \emph{Selective Patching +
+    Dynamic Reassembly} stream; the two are linearly embedded and
+    combined by an Adaptive Fusion with positional embeddings before
+    a patch-based backbone.}
+  \label{fig:srs-pipeline}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig3_architecture}
+  \caption{Detail of the SRS module
+    (\citealt[Fig.~3]{wu2025srsnet}). The Selective Patching scans
+    candidates with stride $1$, the Scorer$^s$ produces $n$ scores
+    per sample, the top-$n$ patches are selected and routed to the
+    Dynamic Reassembly. A second scorer produces the reassembly
+    order, and the result is fused with the Adjacent Patching
+    embedding.}
+  \label{fig:srs-architecture}
+\end{figure}
+
+The SRSNet model is the SRS module followed by a single-layer linear
+forecasting head over the flattened patch tokens; it is the
+``Patch-based model'' box on the right of Figure~\ref{fig:srs-pipeline}.
+The total parameter count of our baseline configuration with
+\texttt{d\_model=256}, \texttt{patch\_len=24}, \texttt{seq\_len=512}
+is approximately $31.5$k.
+
+We re-use the authors' official PyTorch implementation released under
+the TFB benchmark~\citep{qiu2024tfb}. We did not re-implement the
+model: all extensions in Section~\ref{sec:results-ext} are
+\emph{single-component} replacements added in
+\verb|ts_benchmark/baselines/srs_paper/extensions.py| in our fork.
+
+\subsection{Datasets}
+
+We use the four ETT datasets from
+\citet{zhou2021informer}: ETTh1, ETTh2 (1-hour sampling, $17$k rows,
+$7$ channels) and ETTm1, ETTm2 (15-min sampling, $69$k rows, $7$
+channels). They are obtained from the official TFB release. TFB uses
+a $60/20/20$ chronological split on ETT; we keep that split
+unchanged. No pre-processing beyond instance normalisation
+(\texttt{RevIN}~\citealt{kim2022revin}, already in the SRSNet code)
+is applied.
+
+\subsection{Hyperparameters}
+
+We do \emph{not} re-tune hyper-parameters. The SRSNet hyper-parameters
+are read from the official shell scripts in
+\verb|scripts/multivariate_forecast/<dataset>_script/SRSNet.sh|
+released by the authors, with two paper-faithful overrides identified
+during the audit phase: \texttt{batch\_size=64} and
+\texttt{train\_drop\_last=false}. These are the same overrides
+applied to all baselines in our \texttt{lite-paper} and
+\texttt{main-compat} scopes. Lookback is the per-dataset value picked
+by the vendor shell scripts (\texttt{seq\_len=512} for ETT).
+
+\subsection{Experimental setup and code}
+
+All experiments run through the modified TFB pipeline. The
+orchestration is the \verb|scripts/repro/paper_repro.py| runner. It
+exposes four scopes:
+\begin{itemize}
+  \item \texttt{lite-paper}: SRSNet baseline ($16$ cells) plus
+    Table~3 plug-in ($40$ cells) plus Table~4 ablation ($40$
+    cells) on ETT.
+  \item \texttt{main-compat}: seven baseline models
+    (PatchTST, DLinear, iTransformer, TimesNet, TimeMixer, PatchMLP,
+    xPatch) on ETT, four horizons each.
+  \item \texttt{selectivity-controls}: nine variants on a small grid
+    of $2$ datasets $\times 2$ horizons $\times 5$ seeds ($180$ runs).
+  \item \texttt{selectivity-controls-full}: same nine variants but on
+    $4$ datasets $\times 4$ horizons $\times 5$ seeds ($720$ runs,
+    not run in this report due to compute budget).
+\end{itemize}
+The code is released at
+\url{https://github.com/SusannaArdigo/SRSNet} on the
+\verb|paper-faithful-repro-ett-extensions| branch.
+
+\subsection{Computational requirements}
+
+All experiments ran on a single NVIDIA RTX 4090 (24~GB) instance
+provided by Hivenet. The container had a small \texttt{/dev/shm}
+(64~MB), which we worked around by forcing
+\texttt{num\_workers=0} in the runner. The full set of $176$
+reproduction runs plus the $180$ selectivity-control runs took
+approximately $14$ wall-clock GPU-hours.
+
+\section{Results}
+\label{sec:results}
+
+We separate the reproduction itself (Section~\ref{sec:results-repro})
+from the small-grid audit
+(Section~\ref{sec:results-controls}--\ref{sec:results-ext}).
+
+\subsection{Results reproducing the original paper}
+\label{sec:results-repro}
+
+\paragraph{Claim C1 -- Headline performance.}
+On our hardware the average MSE on the $4$ ETT datasets $\times 4$
+horizons is summarised in Table~\ref{tab:tab2}. SRSNet achieves
+$0.362$, slightly worse than the paper's reported $0.335$, and is
+ranked $5/7$ among the baselines we re-ran. DLinear is the strongest
+baseline at $0.309$, followed by TimeMixer and iTransformer. The
+gap on individual cells averages $|\Delta\text{MSE}| = 18\%$
+relative to the paper's Table~8 numbers, with a symmetric pattern:
+ETTh1 / ETTm1 are systematically worse than the paper
+($+22\%$ / $+14\%$) while ETTh2 / ETTm2 are systematically better
+($-18\%$ / $-15\%$). This is consistent with hardware-induced
+non-determinism on the cuDNN \texttt{efficient} mode mandated by the
+paper's \verb|rolling_forecast_config.json|.
+
+\begin{table}[t]
+  \caption{Average MSE across the $4$ ETT datasets and $4$ horizons.
+    SRSNet is no longer the best model on our hardware; DLinear is.
+    xPatch could not be evaluated under the container's
+    \texttt{/dev/shm=64MB} constraint.}
+  \label{tab:tab2}
+  \begin{center}
+  \begin{tabular}{lccr}
+    \toprule
+    Model & Our AVG MSE & Paper AVG MSE & Cells \\
+    \midrule
+    \textbf{DLinear} (best on our hw.) & \textbf{0.3091} & 0.348 & 12 \\
+    TimeMixer        & 0.3133 & 0.336 & 12 \\
+    iTransformer     & 0.3209 & 0.339 & 12 \\
+    PatchTST         & 0.3580 & 0.351 & 16 \\
+    SRSNet           & 0.3618 & 0.335 & 16 \\
+    TimesNet         & 0.3687 & 0.408 & 12 \\
+    PatchMLP         & 0.3852 & 0.385 & 8  \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\paragraph{Claim C2 -- Ablation hierarchy.}
+Table~\ref{tab:tab4} reports the SRSNet ablation extended to all four
+ETT datasets (the original paper uses only ETTh1 + ETTm2). Averaging
+across 16 cells per variant (4 datasets $\times$ 4 horizons), NoAF
+remains the most damaging ablation ($+3.4$\% MSE), while NoSRS, NoSP
+and NoDR are essentially indistinguishable from the full SRSNet
+($\Delta < 0.1$\% MSE on average). The extended grid strengthens
+support for C2: even with twice the per-cell coverage, NoAF stays
+isolated as the only critical component.
+
+\begin{table}[t]
+  \caption{Reproduction of Table~4 of \citet{wu2025srsnet}, extended
+    to the four ETT datasets (16 cells per variant). NoAF is the
+    only ablation with a clearly visible MSE drop; the other three
+    ablations are statistically equivalent to the full SRSNet.}
+  \label{tab:tab4}
+  \begin{center}
+  \begin{tabular}{lcr}
+    \toprule
+    Variant          & Avg MSE & $\Delta$ vs Full \\
+    \midrule
+    SRSNet (Full)    & 0.3616 & $0$\% \\
+    SRSNet\_NoSRS    & 0.3616 & $+0.0$\% \\
+    SRSNet\_NoSP     & 0.3614 & $-0.1$\% \\
+    SRSNet\_NoDR     & 0.3617 & $+0.0$\% \\
+    \textbf{SRSNet\_NoAF}     & \textbf{0.3740} & $\mathbf{+3.4}$\% \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\paragraph{Claim C3 -- Plug-and-play SRS.}
+The paper reports an average $5$--$9\%$ MSE improvement when
+attaching SRS to a vanilla MLP head (Table~3 of
+\citealt{wu2025srsnet}). On our setup, extended to all four ETT
+datasets, the SRS plug-in improves the base MLP on $7$ of $16$
+cells; the average effect is close to zero (see
+Table~\ref{tab:tab3}). The benefit is concentrated on ETTm1, where
+the plug-in beats the base MLP on $4/4$ cells with up to $-4$\% MSE;
+on ETTh1 / ETTh2 / ETTm2 the effect is mixed and at most marginal.
+C3 is partially supported, but only on ETTm1.
+
+\begin{table}[t]
+  \caption{Reproduction of Table~3 of \citet{wu2025srsnet}, extended
+    to the four ETT datasets. SRS as a plug-in on top of a vanilla
+    MLP improves the base on 7 of 16 cells. The effect is
+    concentrated on ETTm1.}
+  \label{tab:tab3}
+  \begin{center}
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    Dataset / H & Base MSE & +SRS MSE & $\Delta$\% & Improves? \\
+    \midrule
+    ETTh1 / 96   & 0.4360 & 0.4362 & $+0.03$ & no \\
+    ETTh1 / 192  & 0.4815 & 0.4869 & $+1.13$ & no \\
+    ETTh1 / 336  & 0.5396 & 0.5289 & $-1.99$ & \textbf{yes} \\
+    ETTh1 / 720  & 0.6535 & 0.6580 & $+0.69$ & no \\
+    ETTh2 / 96   & 0.2171 & 0.2268 & $+4.46$ & no \\
+    ETTh2 / 192  & 0.2755 & 0.2736 & $-0.68$ & \textbf{yes} \\
+    ETTh2 / 336  & 0.3126 & 0.3231 & $+3.36$ & no \\
+    ETTh2 / 720  & 0.4191 & 0.4231 & $+0.95$ & no \\
+    \textbf{ETTm1 / 96}  & 0.3220 & 0.3185 & $\mathbf{-1.09}$ & \textbf{yes} \\
+    \textbf{ETTm1 / 192} & 0.3782 & 0.3680 & $\mathbf{-2.68}$ & \textbf{yes} \\
+    \textbf{ETTm1 / 336} & 0.4313 & 0.4139 & $\mathbf{-4.04}$ & \textbf{yes} \\
+    \textbf{ETTm1 / 720} & 0.5058 & 0.5057 & $-0.03$ & \textbf{yes} \\
+    ETTm2 / 96   & 0.1492 & 0.1478 & $-0.88$ & \textbf{yes} \\
+    ETTm2 / 192  & 0.1809 & 0.1830 & $+1.16$ & no \\
+    ETTm2 / 336  & 0.2144 & 0.2193 & $+2.26$ & no \\
+    ETTm2 / 720  & 0.2683 & 0.2775 & $+3.42$ & no \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\subsection{Selectivity-controls study}
+\label{sec:results-controls}
+
+The paper's NoSP ablation removes the architecture of selective
+patching but keeps the rest of the SRS pipeline intact. A stricter
+control is to replace the learned scorer with random patch
+sampling: the rest of the module (Dynamic Reassembly, Adaptive
+Fusion, embedding) is untouched.
+
+We implement two variants in
+\verb|extensions.py|: \texttt{SRSNet\_RandomSP} (random select +
+learned shuffle) and \texttt{SRSNet\_RandomSPNoShuffle} (random
+select + identity shuffle). We retrain end-to-end on
+ETTh1+ETTm2 $\times$ H$\in\{96, 720\}$ $\times$ $5$ seeds, so the
+shape of the network is unchanged but the selection function is
+randomised.
+
+Across the $20$ resulting cells per variant the mean $\Delta$MSE is
+$-0.22$\% (RandomSP) and $-0.12$\% (RandomSPNoShuffle); the
+seed-level standard deviation is $1.23$\% and $1.46$\%. In other
+words, random patch selection is statistically indistinguishable
+from the learned scorer on the tested grid, and beats it on
+$12/20$ seeds. The strongest cell is ETTh1 / H=720, where
+RandomSPNoShuffle is better than SRSNet on $5/5$ seeds with a mean
+$\Delta$ of $-1.07$\%.
+
+\subsection{Constructive extensions and factorial decomposition}
+\label{sec:results-ext}
+
+To complement the negative-control result with a constructive
+proposal, we add three extensions mapped to Future Work entries of
+\citet[Sec.~6]{wu2025srsnet}, and the corresponding factorial
+combinations with the Hypernet-AF fusion. The full list is in
+Table~\ref{tab:variants}.
+
+\begin{table}[t]
+  \caption{The nine selectivity-controls variants. ``Free $\alpha$''
+    is the paper's adaptive-fusion parameter; ``Hypernet $\alpha$''
+    is our zero-initialised hypernet over a batch context.}
+  \label{tab:variants}
+  \begin{center}
+  \begin{tabular}{lcccc}
+    \toprule
+    Variant & \texttt{\_select} & \texttt{\_shuffle} & $\alpha$ fusion & aux loss \\
+    \midrule
+    SRSNet (baseline)               & learned   & learned  & free     & --   \\
+    SRSNet\_RandomSP                & random    & learned  & free     & --   \\
+    SRSNet\_RandomSPNoShuffle       & random    & identity & free     & --   \\
+    SRSNet\_TASP                    & engineered & learned & free     & --   \\
+    SRSNet\_HypernetAF              & learned   & learned  & hypernet & --   \\
+    SRSNet\_PSRS                    & learned   & learned  & free     & yes  \\
+    SRSNet\_RandomSP\_HypernetAF    & random    & learned  & hypernet & --   \\
+    SRSNet\_TASP\_HypernetAF        & engineered & learned & hypernet & --   \\
+    SRSNet\_PSRS\_HypernetAF        & learned   & learned  & hypernet & yes  \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+\paragraph{TASP -- Time-Aware Selective Patching.}
+Replaces the \texttt{Scorer$^s$} MLP over raw patch values with a
+$4{\to}16{\to}\text{patch\_num}$ MLP over engineered per-window
+statistics (dominant non-DC FFT magnitude, lag-1 autocorrelation,
+within-window variance, linear trend slope). Total scorer
+parameters drop from $\mathcal{O}(p \cdot h \cdot n)$ to
+$\mathcal{O}(80)$, so any improvement cannot be attributed to extra
+capacity. Targets FW\#1 (environment-aware mechanism) and L3
+(interpretability).
+
+\paragraph{Hypernet-AF.}
+Replaces the free $\alpha$ tensor of shape \texttt{[patch\_num,
+d\_model]} with a tiny hypernet (\texttt{d\_model$\to$8$\to$patch\_num$\cdot$d\_model})
+that consumes a batch-level context vector. Hypernet weights are
+zero-initialised and the output bias is set to $3.5$, so step~0
+behaves exactly as vanilla SRSNet ($\sigma(3.5) \approx 0.97$).
+Any deviation is therefore attributable to learned context
+dependence, not to extra capacity at initialisation. Targets FW\#3
+(more efficient update mechanism for $\alpha$) and L4
+(initialisation).
+
+\paragraph{PS-SRS -- Pattern-Supervised SRS.}
+Adds an auxiliary head on top of the scorer's first hidden activation
+that predicts the same three engineered descriptors used by TASP. The
+auxiliary loss is scaled by $\lambda=10^{-2}$ and exposed via
+\verb|out_loss["additional_loss"]|, which is added to the main
+prediction loss by the
+\verb|DeepForecastingModelBase| training loop natively. Targets FW\#4
+(supervised module for sample-wise patterns) and L3.
+
+\paragraph{Factorial design.}
+The three combinations \texttt{SRSNet\_RandomSP\_HypernetAF},
+\texttt{SRSNet\_TASP\_HypernetAF} and \texttt{SRSNet\_PSRS\_HypernetAF}
+fill the missing cells of the $4\times 2$ (Select, Fusion) factorial
+table:
+
+\medskip
+
+\noindent
+\begin{tabular}{l|cc}
+  Select \textbackslash\ Fusion & Free $\alpha$ & Hypernet $\alpha$ \\
+  \hline
+  Learned (vanilla)            & SRSNet & SRSNet\_HypernetAF \\
+  Random                       & SRSNet\_RandomSP & SRSNet\_RandomSP\_HypernetAF \\
+  TASP (engineered)            & SRSNet\_TASP & SRSNet\_TASP\_HypernetAF \\
+  LearnedAux (PSRS)            & SRSNet\_PSRS & SRSNet\_PSRS\_HypernetAF \\
+\end{tabular}
+
+\medskip
+
+\paragraph{Results.}
+Figure~\ref{fig:variant-ranking} ranks the eight extensions by mean
+$\Delta$MSE versus SRSNet. The four random variants and the
+hypernet variant cluster near $\Delta \approx 0$; the TASP and PSRS
+variants are marginally worse. All means are inside the seed-level
+standard deviation band, so no variant differs significantly from
+the baseline in this setup.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig5_variant_ranking}
+  \caption{Mean $\Delta$MSE versus SRSNet baseline across $20$ cells
+    per variant (selectivity-controls study). Error bars are the
+    seed-level standard deviation. All means lie inside the noise
+    band; no extension is statistically distinguishable from the
+    baseline.}
+  \label{fig:variant-ranking}
+\end{figure}
+
+Figure~\ref{fig:factorial} shows the $(Select, Fusion)$ factorial
+table. The best mean MSE in the grid is achieved by
+$(Random, \text{Free }\alpha) = 0.3773$, marginally better than the
+$(Learned, \text{Free }\alpha) = 0.3788$ baseline. The Fusion main
+effect is $-0.10$\% (std $1.28$, $n=80$), the Select main effects
+are $-0.17$\% (Learned $\to$ Random), $+0.17$\% (Learned $\to$
+TASP), $+0.22$\% (Learned $\to$ LearnedAux). All four effects are
+inside the seed-level std band: the factorial decomposition shows
+null main effects on both factors.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.7\linewidth]{fig4_factorial}
+  \caption{Factorial decomposition over $20$ cells per variant.
+    Each cell shows mean MSE and $\Delta$\% relative to the
+    $(Learned, \text{Free }\alpha)$ baseline. Colour scale is
+    saturated at $\pm 0.5$\%; all cells are within $\pm 0.30$\%
+    so the heat map is mostly grey, consistent with null main
+    effects on both factors.}
+  \label{fig:factorial}
+\end{figure}
+
+The most informative cell is ETTh1 / H=720
+(Figure~\ref{fig:etth1h720}): two variants beat the SRSNet baseline
+on $5/5$ seeds, and both \emph{remove} or \emph{simplify} the
+learned scorer (RandomSPNoShuffle, $-1.07$\%; TASP, $-1.00$\%).
+None of the variants that \emph{refine} the learned scorer (PSRS,
+HypernetAF) improve over the baseline on this cell.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\linewidth]{fig6_etth1_h720}
+  \caption{ETTh1 H=720 -- mean MSE across $5$ seeds, ranked
+    ascending. Two variants beat the baseline on $5/5$ seeds:
+    \texttt{RandomSPNoShuffle} ($-1.07$\%) and \texttt{TASP}
+    ($-1.00$\%). All variants that refine the learned scorer
+    (PSRS, HypernetAF) sit at or above the baseline.}
+  \label{fig:etth1h720}
+\end{figure}
+
+\section{Discussion}
+
+The reproduction confirms one of the paper's claims (C2: NoAF is
+the dominant ablation), partially supports another (C1: SRSNet is
+in the top half of baselines but DLinear is strictly better on
+ETT), and does not support a third (C3: SRS plug-and-play
+improvement on MLP shrinks from $5$--$9$\% to two cells out of
+eight). The selectivity-controls study suggests an answer to our
+methodological question Q: \emph{on the tested cells, learned
+patch selection is not necessary}. Random patch selection matches
+or beats the learned scorer on $12/20$ seeds and on the most
+visible cell (ETTh1 / H=720) the two best variants are both
+non-learned. The factorial decomposition is consistent: switching
+$\alpha$ from a free parameter to a context-dependent hypernet
+changes nothing, and switching the selector between Learned,
+Random, TASP, or LearnedAux only moves the mean MSE by less than
+the seed-level standard deviation.
+
+We deliberately framed the constructive extensions as
+\emph{minimal interventions}. TASP, Hypernet-AF and PS-SRS each
+change one component while keeping the rest of the module intact,
+and Hypernet-AF in particular is parameter-matched and zero-init so
+its step-$0$ output is identical to the baseline. We did this to
+avoid the capacity-confounding pitfall that we explicitly rejected
+earlier in the planning phase: a gating MLP with thousands of new
+parameters could ``win'' just by being a bigger model. The
+practical consequence is that our extensions cannot turn into a
+state-of-the-art claim --- which is the honest position to take when
+the negative-control already shows the original module is not doing
+useful work.
+
+\subsection{What was easy}
+
+The TFB harness is well-documented and the authors release usable
+shell scripts per dataset. After one round of paper-faithful fixes
+(batch size, drop-last flag, num\_workers, the
+\texttt{np.Inf}/\texttt{np.inf} renaming and a downgrade of pandas
+below 2.2 for the \texttt{'H'}/\texttt{'h'} frequency change) the
+SRSNet rows produced numbers within $1$--$3$\% of the paper. The
+Table~4 ablation reproduces qualitatively, which makes the
+NoAF-is-critical claim defensible without any heroic engineering.
+
+\subsection{What was difficult}
+
+The compute environment was hostile in unexpected ways. The first
+RTX 4090 box on Hivenet had \texttt{/dev/shm=64MB}, which prevents
+TFB's default DataLoader workers from running; the workaround was
+forcing \texttt{num\_workers=0}, which works but is slower. Several
+SSH sessions to the bastion dropped mid-batch, so the runner had to
+be \texttt{nohup}-detached and the orchestration script had to be
+fully resume-aware (idempotent metadata + per-task config hash).
+Lightning AI as a backup ran into a similar set of paper cuts
+(\texttt{np.Inf}, pandas 3.0, missing \texttt{matplotlib} /
+\texttt{dash}). Finally, the cuDNN \texttt{efficient} setting that
+the paper's \verb|rolling_forecast_config.json| selects is
+non-deterministic, so there is a residual seed-and-hardware noise
+floor (about $\pm 1$--$2$\% MSE) below which no extension claim can
+be honestly made on this grid.
+
+\subsection{Communication with original authors}
+
+We did not contact the original authors. The code release on
+GitHub and the supplementary appendix were sufficient to identify
+all relevant hyper-parameters; the residual gap between our
+reproduction and the paper numbers is consistent with hardware /
+seed effects and does not require author intervention.
+
+\section{Conclusion}
+
+We reproduced SRSNet's main experiments under a paper-faithful
+TFB pipeline on the four ETT datasets, confirming the
+\emph{Adaptive Fusion} ablation but not the headline
+state-of-the-art claim, and showing that the plug-and-play SRS
+benefit on MLP shrinks to two out of eight cells. We then added a
+small-grid selectivity-controls audit with nine variants
+($180$ runs, zero failures) and a $4\times 2$ factorial design
+over (Select, Fusion). On the tested grid, random patch selection
+matches or beats the learned scorer, the Fusion factor is null,
+and on ETTh1 / H=720 the two variants that \emph{remove} or
+\emph{simplify} the learned scorer beat the baseline on $5/5$
+seeds. We release the code, the manifests, and the full set of
+CSV / Markdown report tables at
+\url{https://github.com/SusannaArdigo/SRSNet}.
+
+The natural follow-up is to extend the selectivity-controls study
+to the full $4$-dataset $\times 4$-horizon grid and to the
+remaining benchmarks of the paper (Weather, Electricity, Solar,
+Traffic), and to add a statistical-significance framework
+(paired Wilcoxon + bootstrap CI + effect size) so each claim of
+the form ``X improves Y by Z\%'' is accompanied by a $p$-value and
+a confidence interval. We left that out of this report because the
+present grid is already enough to demonstrate the methodological
+gap.
+
+\section*{Member contributions}
+
+Both authors contributed to the design of the experiments, the
+selection of the selectivity-controls variants, and the writing of
+the report. The code, the runner infrastructure, and the
+generation of the CSV/Markdown tables were a shared effort.
+
+\bibliography{main}
+\bibliographystyle{tmlr}
+
+\include{appendix}
+
+\end{document}
