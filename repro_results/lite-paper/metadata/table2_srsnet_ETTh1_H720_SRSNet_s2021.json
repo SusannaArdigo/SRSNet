@@ -6,7 +6,7 @@
     }
   ],
   "command": [
-    "/home/ubuntu/SRSNet/.venv/bin/python",
+    "/usr/bin/python3",
     "./scripts/run_benchmark.py",
     "--config-path",
     "rolling_forecast_config.json",
@@ -21,7 +21,7 @@
     "--gpus",
     "0",
     "--num-workers",
-    "1",
+    "0",
     "--timeout",
     "60000",
     "--save-path",
@@ -29,15 +29,15 @@
     "--seed",
     "2021"
   ],
-  "command_hash": "6cf3f24f8245e252",
+  "command_hash": "11677fa43e4e444d",
   "config_hash": "6f0bd1cf3bbb4de0",
   "dataset": "ETTh1",
   "deterministic_used": "efficient",
-  "effective_concurrency": 4,
-  "ended_at": 1778738848.0830398,
+  "effective_concurrency": 1,
+  "ended_at": 1779011358.9121137,
   "final_batch_size": 64,
   "final_command": [
-    "/home/ubuntu/SRSNet/.venv/bin/python",
+    "/usr/bin/python3",
     "./scripts/run_benchmark.py",
     "--config-path",
     "rolling_forecast_config.json",
@@ -52,7 +52,7 @@
     "--gpus",
     "0",
     "--num-workers",
-    "1",
+    "0",
     "--timeout",
     "60000",
     "--save-path",
@@ -98,9 +98,9 @@
   "model": "SRSNet",
   "note": "",
   "oom_retry": true,
-  "parallel_requested": 4,
+  "parallel_requested": 1,
   "requested_command": [
-    "/home/ubuntu/SRSNet/.venv/bin/python",
+    "/usr/bin/python3",
     "./scripts/run_benchmark.py",
     "--config-path",
     "rolling_forecast_config.json",
@@ -115,7 +115,7 @@
     "--gpus",
     "0",
     "--num-workers",
-    "1",
+    "0",
     "--timeout",
     "60000",
     "--save-path",
@@ -123,7 +123,7 @@
     "--seed",
     "2021"
   ],
-  "requested_command_hash": "6cf3f24f8245e252",
+  "requested_command_hash": "11677fa43e4e444d",
   "requested_config_hash": "6f0bd1cf3bbb4de0",
   "requested_identity": {
     "adapter": null,
@@ -157,11 +157,11 @@
       "horizon": 720
     }
   },
-  "result_file": "/home/ubuntu/SRSNet/result/repro/lite-paper/table2_srsnet/table2_srsnet_ETTh1_H720_SRSNet_s2021/test_report.1778738846.4e2bb402-a76f-432c-8ae1-e63613e38412-7dd7fd5db6-zgn69.203628.csv",
+  "result_file": "/home/ubuntu/SRSNet/result/repro/lite-paper/table2_srsnet/table2_srsnet_ETTh1_H720_SRSNet_s2021/test_report.1779011357.8e9af4e1-bd59-4abd-bd87-4b870b430c55-5f6cc66cbf-skqft.1284.csv",
   "save_path": "repro/lite-paper/table2_srsnet/table2_srsnet_ETTh1_H720_SRSNet_s2021",
   "seed": 2021,
   "seq_len": null,
-  "started_at": 1778738808.0665662,
+  "started_at": 1779011324.3135238,
   "status": "completed",
   "table": "table2_srsnet",
   "task_id": "table2_srsnet_ETTh1_H720_SRSNet_s2021"

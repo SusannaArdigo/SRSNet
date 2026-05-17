@@ -121,12 +121,34 @@ PAPER_TAB2 = {
 
 def load_summary():
     """Read summary.csv. Per ogni task completato, leggi metriche dal
-    test_report.csv locale (i path nel summary puntano a Hivenet)."""
+    test_report.csv locale (i path nel summary puntano a Hivenet).
+
+    Falls back to reading metadata/*.json directly when the summary
+    marks tasks as 'pending' because of a stale command_hash mismatch
+    (e.g. after the scope definition changed).  The actual experiment
+    is considered completed if the metadata file says so AND the
+    corresponding test_report.csv exists on disk.
+    """
     rows = []
     local_results = ROOT / "result" / "repro" / "lite-paper"
+    # Build a map task_id -> metadata['status'] so we can override the
+    # summary.csv status when needed.
+    meta_dir = ROOT / "repro_results" / "lite-paper" / "metadata"
+    meta_status = {}
+    if meta_dir.exists():
+        for mf in meta_dir.glob("*.json"):
+            try:
+                md = json.loads(mf.read_text())
+                meta_status[md.get("task_id", mf.stem)] = md.get("status", "")
+            except Exception:
+                pass
     with open(SUMMARY) as f:
         for r in csv.DictReader(f):
-            if r["status"] != "completed":
+            # Honour either the summary status or the metadata status.
+            actual_status = r["status"]
+            if actual_status != "completed" and meta_status.get(r["task_id"]) == "completed":
+                actual_status = "completed"
+            if actual_status != "completed":
                 continue
             # Trova il test_report locale per questo task
             task_dir = local_results / r["table"] / r["task_id"]
@@ -238,7 +260,7 @@ def gen_tab3(rows):
     header = ["dataset", "horizon", "base_model", "base_MSE",
               "plus_srs_model", "plus_srs_MSE", "delta_MSE_pct", "improved"]
     lines = [",".join(header)]
-    for ds in ["ETTh1", "ETTm2"]:  # lite-paper plugin coverage
+    for ds in ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]:  # lite-paper extended (4 ETT)
         for h in [96, 192, 336, 720]:
             for base, plus in pairs:
                 b = cells.get((base, ds, h))
@@ -270,7 +292,8 @@ def gen_tab4(rows):
     variants = ["SRSNet", "SRSNet_NoSRS", "SRSNet_NoSP", "SRSNet_NoDR", "SRSNet_NoAF"]
     header = ["dataset", "horizon"] + [f"{v}_MSE" for v in variants] + [f"{v}_MAE" for v in variants]
     lines = [",".join(header)]
-    for ds in ["ETTh1", "ETTm2"]:
+    datasets = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]  # lite-paper extended (4 ETT)
+    for ds in datasets:
         for h in [96, 192, 336, 720]:
             row = [ds, str(h)]
             for v in variants:
@@ -280,8 +303,17 @@ def gen_tab4(rows):
                 cell = cells.get((v, ds, h))
                 row.append(fmt(cell[1]) if cell else "")
             lines.append(",".join(row))
+    # Add per-variant AVERAGE row
+    avg_row = ["AVERAGE", ""]
+    for col_metric in (0, 1):  # MSE then MAE
+        for v in variants:
+            vals = [cells[(v, ds, h)][col_metric]
+                    for ds in datasets for h in [96, 192, 336, 720]
+                    if cells.get((v, ds, h)) and cells[(v, ds, h)][col_metric] is not None]
+            avg_row.append(fmt(sum(vals)/len(vals)) if vals else "")
+    lines.append(",".join(avg_row))
     out_path.write_text("\n".join(lines) + "\n")
-    print(f"  ✅ {out_path.name}: {len(lines)-1} rows (5 variants × 8 cells)")
+    print(f"  ✅ {out_path.name}: {len(lines)-2} cell rows + AVG ({len(variants)} variants × {len(datasets)*4} cells)")
 
 
 def gen_summary_stats(rows):

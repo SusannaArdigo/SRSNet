@@ -20,7 +20,7 @@
 |---|---|---|
 | ETTh1 | +30.06% | noi PEGGIO del paper |
 | ETTh2 | -6.50% | noi MEGLIO del paper |
-| ETTm1 | +14.15% | noi PEGGIO del paper |
+| ETTm1 | +14.72% | noi PEGGIO del paper |
 | ETTm2 | -16.94% | noi MEGLIO del paper |
 
 ## Top 5 worst (largest |delta|)
@@ -28,7 +28,7 @@
 | ds | H | nostro | paper | delta% |
 |---|---|---|---|---|
 | ETTh1 | 720 | 0.6577 | 0.426 | +54.38% |
-| ETTh1 | 336 | 0.5289 | 0.424 | +24.73% |
+| ETTh1 | 336 | 0.5288 | 0.424 | +24.71% |
 | ETTm2 | 720 | 0.2720 | 0.350 | -22.29% |
 | ETTh1 | 192 | 0.4868 | 0.400 | +21.71% |
 | ETTm1 | 720 | 0.5055 | 0.421 | +20.07% |
@@ -41,12 +41,12 @@
 | ETTh2 | 720 | 0.4295 | 0.399 | +7.64% |
 | ETTm2 | 96 | 0.1486 | 0.164 | -9.39% |
 | ETTm1 | 96 | 0.3199 | 0.288 | +11.07% |
-| ETTm1 | 192 | 0.3678 | 0.329 | +11.79% |
+| ETTm1 | 192 | 0.3715 | 0.329 | +12.93% |
 
 ## Verdetto
 
-- **Delta MSE medio (signed)**: +5.19%
-- **Delta MSE medio (assoluto)**: 18.03%
+- **Delta MSE medio (signed)**: +5.33%
+- **Delta MSE medio (assoluto)**: 18.17%
 
 ### Pattern principali
 
