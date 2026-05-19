@@ -484,38 +484,49 @@ def _selectivity_controls_tasks(scope, gpu, grid):
     return tasks
 
 
+PSRS_SWEEP_VARIANTS = [
+    # (model_name, table_prefix).
+    # For backwards compatibility with the already-completed batch we
+    # keep the original "psrs_sweep" prefix for the standalone PS-SRS
+    # variant.  The combo gets its own prefix.
+    ("srs_paper.SRSNet_PSRS", "psrs_sweep"),
+    ("srs_paper.SRSNet_PSRS_HypernetAF", "psrs_sweep_combo"),
+]
+
+
 def _psrs_sweep_tasks(scope, gpu):
     """PS-SRS lambda sweep with z-scored auxiliary targets.
 
-    For each lambda in PSRS_SWEEP_LAMBDAS, generates the small
-    selectivity-controls grid (2 datasets x 2 horizons x 5 seeds = 20
-    tasks per lambda).  Lambda is injected into the model
-    hyperparameters via ``hyper_overrides``; lambda=0 is the clean
-    control (same architecture, no auxiliary signal).
+    For each variant in PSRS_SWEEP_VARIANTS and each lambda in
+    PSRS_SWEEP_LAMBDAS, generates the small selectivity-controls grid
+    (2 datasets x 2 horizons x 5 seeds = 20 tasks per (variant,
+    lambda) cell).  Lambda is injected into the model hyperparameters
+    via ``hyper_overrides``; lambda=0 is the clean control (same
+    architecture, no auxiliary signal).
 
-    Total: len(PSRS_SWEEP_LAMBDAS) * 20 = 80 tasks at the default
-    sweep grid.
+    Total: len(PSRS_SWEEP_VARIANTS) * len(PSRS_SWEEP_LAMBDAS) * 20
+    = 160 tasks at the default sweep grid (2 variants x 4 lambdas x
+    20 cells).
     """
     tasks = []
-    for lam in PSRS_SWEEP_LAMBDAS:
-        # Tag the task_id with the lambda value so two runs of
-        # different lambdas do not collide in the metadata directory.
-        lam_tag = f"lam{lam:g}".replace(".", "p")
-        for dataset in SELECTIVITY_DATASETS_SMALL:
-            built = _official_tasks_for(
-                dataset,
-                "SRSNet",
-                scope=scope,
-                table=f"psrs_sweep_{lam_tag}",
-                gpu=gpu,
-                seeds=tuple(SELECTIVITY_SEEDS),
-                model_name="srs_paper.SRSNet_PSRS",
-                adapter=None,
-                hyper_overrides={"lambda_aux": float(lam)},
-            )
-            tasks.extend(
-                t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL)
-            )
+    for model_name, prefix in PSRS_SWEEP_VARIANTS:
+        for lam in PSRS_SWEEP_LAMBDAS:
+            lam_tag = f"lam{lam:g}".replace(".", "p")
+            for dataset in SELECTIVITY_DATASETS_SMALL:
+                built = _official_tasks_for(
+                    dataset,
+                    "SRSNet",
+                    scope=scope,
+                    table=f"{prefix}_{lam_tag}",
+                    gpu=gpu,
+                    seeds=tuple(SELECTIVITY_SEEDS),
+                    model_name=model_name,
+                    adapter=None,
+                    hyper_overrides={"lambda_aux": float(lam)},
+                )
+                tasks.extend(
+                    t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL)
+                )
     return tasks
 
 
