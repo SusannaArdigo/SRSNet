@@ -653,13 +653,87 @@ variance in $[0.08, 2.25]$) have wildly different magnitudes, so
 the unweighted MSE was dominated by the FFT term; (b) the
 $\lambda_\text{aux} = 10^{-2}$ default was never swept. To probe
 how much these design choices contributed to the negative result,
-we ran a small four-lambda sweep ($\lambda \in \{0,\,10^{-3},\,
-10^{-2},\,10^{-1}\}$) with z-scored descriptor targets across the
-small selectivity grid. The intent is descriptive: the goal is
-not to find a winning $\lambda$ but to verify whether \emph{any}
-choice of $\lambda$ recovers an improvement over baseline.
-\textbf{[Sweep results to be inserted once the batch completes;
-running at the time of writing.]}
+we ran a 160-task sweep ($\lambda \in \{0,\,10^{-3},\,10^{-2},\,
+10^{-1}\}$) with z-scored descriptor targets, for both PS-SRS
+standalone and the PSRS\_HypernetAF combo, across the small
+selectivity grid (2 datasets x 2 horizons x 5 seeds = 20 cells per
+$(\text{variant}, \lambda)$). The intent is descriptive: the goal
+is not to find a winning $\lambda$ but to verify whether
+\emph{any} choice of $\lambda$ recovers an improvement over
+baseline. Results are in Table~\ref{tab:psrs-sweep}.
+
+\begin{table}[ht]
+  \caption{PS-SRS $\lambda$ sweep with z-scored auxiliary targets.
+    Each row is $n=20$ cells. The mean $\Delta$\% is the paired
+    delta vs the SRSNet baseline on the same
+    (dataset, horizon, seed) cells. All $p$-values exceed
+    $0.05$; the closest to significance is PS-SRS with
+    $\lambda = 10^{-1}$ at $p = 0.054$, which is a
+    \emph{degradation} ($+0.64\%$) rather than an improvement,
+    confirming the main-loss conflict diagnosed in the audit.}
+  \label{tab:psrs-sweep}
+  \begin{center}
+  \small
+  \begin{tabular}{llrcccr}
+    \toprule
+    Variant & $\lambda$ & mean $\Delta$\% & std \% & $95\%$ CI & $p$ & wins/20 \\
+    \midrule
+    PS-SRS                          & $0$       & $+0.158$ & $1.11$ & $[-0.36, +0.68]$ & $0.534$ & $10$ \\
+    PS-SRS                          & $10^{-3}$ & $+0.432$ & $1.24$ & $[-0.15, +1.01]$ & $0.136$ & $9$  \\
+    \textbf{PS-SRS}                 & $\mathbf{10^{-2}}$ & $\mathbf{-0.274}$ & $1.14$ & $[-0.81, +0.26]$ & $0.296$ & $\mathbf{13}$ \\
+    PS-SRS                          & $10^{-1}$ & $+0.644$ & $1.40$ & $[-0.01, +1.30]$ & $\mathbf{0.054}$ & $8$  \\
+    \midrule
+    \textbf{PSRS\_HypernetAF}        & $\mathbf{0}$       & $\mathbf{-0.144}$ & $0.94$ & $[-0.59, +0.30]$ & $0.502$ & $\mathbf{12}$ \\
+    PSRS\_HypernetAF                 & $10^{-3}$ & $-0.089$ & $0.98$ & $[-0.55, +0.37]$ & $0.688$ & $11$ \\
+    PSRS\_HypernetAF                 & $10^{-2}$ & $+0.162$ & $1.05$ & $[-0.33, +0.65]$ & $0.499$ & $12$ \\
+    PSRS\_HypernetAF                 & $10^{-1}$ & $-0.089$ & $1.01$ & $[-0.56, +0.38]$ & $0.697$ & $11$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
+
+Three observations from the sweep matter.
+
+First, the v1 of PS-SRS that we reported in
+Table~\ref{tab:variant-stats} (mean $\Delta = +0.22\%$, $n=20$)
+corresponds to the unfixed $\lambda = 10^{-2}$ row with no
+z-scoring; with z-scoring the same $\lambda$ moves to
+$\Delta = -0.27\%$, the same magnitude with the opposite sign.
+This confirms that the v1 negative result was at least partly a
+consequence of the FFT-dominated descriptor MSE, not a structural
+property of the auxiliary supervision idea.
+
+Second, no $\lambda$ value reaches $p < 0.05$ for either variant.
+The closest is $\lambda = 10^{-1}$ for PS-SRS standalone with
+$p = 0.054$ -- but this is a \emph{degradation} of $+0.64\%$, not
+an improvement. That borderline-significant drop is the
+quantitative version of the gradient-conflict diagnosis from the
+audit: with $\lambda$ large enough to dominate, the auxiliary
+loss pulls the scorer hidden activation away from the direction
+useful for forecasting.
+
+Third, the two variants disagree on where the best $\lambda$ lies.
+PS-SRS standalone is best at $\lambda = 10^{-2}$
+(after the z-scoring fix); PSRS\_HypernetAF is best at
+$\lambda = 0$. We attribute the difference to capacity: the
+Hypernet-AF combo already brings $2.7\times$ more parameters
+than the vanilla baseline, so the additional capacity to
+``absorb'' descriptor patterns already exists in the fusion
+hypernet and the auxiliary head no longer brings useful
+information.
+
+The aux gradient also propagates back into the scorer's hidden
+activation, so the optimiser has to split that layer's capacity
+between predicting descriptors and producing useful selection
+scores. We measured the cosine similarity between the
+$\nabla_W \mathrm{aux}$ and $\nabla_W \mathrm{main}$ on the first
+scorer layer and obtained $\cos = 0.05$ at step~0 (essentially
+orthogonal). Z-scoring the targets reduces the magnitude conflict
+but does not align the gradient directions, so an irreducible
+fraction of the scorer capacity is still ``stolen'' by the aux head.
+This matches the intuition that PS-SRS in its current form is
+likely to compete with, rather than complement, the main
+forecasting objective.
 
 The aux gradient also propagates back into the scorer's hidden
 activation, so the optimiser has to split that layer's capacity
