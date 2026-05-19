@@ -245,13 +245,28 @@ class SRSPatternSupervised(SRS):
     auxiliary loss is exposed via ``last_aux_loss`` so the SRSNet
     wrapper can return it in ``out_loss["additional_loss"]``.  When the
     layer is in ``eval()`` mode the auxiliary computation is skipped.
+
+    Design fixes vs the early v1 of this class (after the audit):
+
+    * The three descriptor targets (FFT max, lag-1 autocorrelation,
+      within-window variance) live at wildly different scales (FFT max
+      O(10), AC1 in [-1, 1], variance O(1)).  Unweighted MSE was
+      dominated by the FFT term, so the head effectively predicted only
+      FFT max.  We now z-score every descriptor across the batch
+      dimension before computing the auxiliary MSE, so each descriptor
+      contributes the same magnitude to the gradient.
+    * ``lambda_aux`` used to be hard-coded to 1e-2 with no sweep.  It
+      can now be overridden via the model hyper-parameters (``alpha``
+      stays for the fusion weight; the new key is ``lambda_aux``).
+      ``lambda_aux = 0`` is a clean control: same architecture, no
+      auxiliary signal.
     """
 
     N_DESCRIPTORS = 3
     LAMBDA_AUX = 1e-2
 
     def __init__(self, d_model, patch_len, stride, seq_len, dropout,
-                 hidden_size, alpha=2.0, pos=True):
+                 hidden_size, alpha=2.0, pos=True, lambda_aux=None):
         super().__init__(d_model, patch_len, stride, seq_len, dropout,
                          hidden_size, alpha, pos)
         # The scorer in the parent is nn.Sequential(Linear, ReLU, Linear).
@@ -260,6 +275,10 @@ class SRSPatternSupervised(SRS):
         hidden_dim = self.scorer_select[0].out_features
         self.descriptor_head = nn.Linear(hidden_dim, self.N_DESCRIPTORS)
         self.last_aux_loss = torch.tensor(0.0)
+        # Allow the runner to override the default lambda without
+        # subclassing.  None means: keep the class-level default.
+        if lambda_aux is not None:
+            self.LAMBDA_AUX = float(lambda_aux)
 
     @staticmethod
     def _ground_truth_descriptors(x_rec):
@@ -276,6 +295,20 @@ class SRSPatternSupervised(SRS):
         ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
         return torch.stack([dominant, ac1, var], dim=-1)
 
+    @staticmethod
+    def _zscore(targets):
+        """Z-score each descriptor across (batch, channel, candidate) dims.
+
+        ``targets`` shape: [B, C, candidate_num, N_DESCRIPTORS].  We
+        flatten the first three dims so every descriptor column has
+        mean 0 and std 1 across the batch.  Eps avoids division by
+        zero on a (degenerate) constant-valued descriptor.
+        """
+        flat = targets.reshape(-1, targets.shape[-1])
+        mean = flat.mean(dim=0, keepdim=True)
+        std = flat.std(dim=0, keepdim=True) + 1e-6
+        return (targets - mean) / std
+
     def _select(self, x_rec):
         # Compute scorer activations once, then reuse for both selection
         # and the auxiliary loss.
@@ -285,10 +318,15 @@ class SRSPatternSupervised(SRS):
         h = relu(first_layer(x_rec))
         scores = second_layer(h)
 
-        if self.training:
+        if self.training and self.LAMBDA_AUX > 0:
+            # Compute z-scored targets (no gradient) and z-scored
+            # predictions (gradient ON) so the auxiliary MSE is
+            # comparable across descriptors.
             with torch.no_grad():
                 gt = self._ground_truth_descriptors(x_rec)
+                gt = self._zscore(gt)
             pred = self.descriptor_head(h)
+            pred = self._zscore(pred)
             self.last_aux_loss = F.mse_loss(pred, gt) * self.LAMBDA_AUX
         else:
             self.last_aux_loss = torch.tensor(0.0, device=x_rec.device)
@@ -325,10 +363,14 @@ def _make_hypernet_combo(base_select_cls, combo_name):
         INIT_ALPHA = SRSHypernetAF.INIT_ALPHA
 
         def __init__(self, d_model, patch_len, stride, seq_len, dropout,
-                     hidden_size, alpha=2.0, pos=True):
+                     hidden_size, alpha=2.0, pos=True, **extra_kwargs):
+            # Forward any extra kwargs (e.g. lambda_aux for PS-SRS) to
+            # the base _select variant's __init__.  Layers that do not
+            # accept the kwarg ignore it via super() because we filter
+            # at the model-wrapper layer before reaching here.
             super().__init__(
                 d_model, patch_len, stride, seq_len, dropout,
-                hidden_size, alpha, pos,
+                hidden_size, alpha, pos, **extra_kwargs,
             )
             # Replace the free alpha parameter with the same zero-init
             # hypernet pattern used by SRSHypernetAF (vanilla-preserving).
@@ -397,16 +439,26 @@ class _SelectivityControlsSRSNetModel(SRSNetModel):
             raise NotImplementedError(
                 "Subclass must set embedding_cls to an SRS variant."
             )
-        self.patch_embedding = self.embedding_cls(
-            config.d_model,
-            self.patch_len,
-            self.stride,
-            self.seq_len,
-            config.dropout,
-            config.hidden_size,
-            config.alpha,
-            config.pos,
+        kwargs = dict(
+            d_model=config.d_model,
+            patch_len=self.patch_len,
+            stride=self.stride,
+            seq_len=self.seq_len,
+            dropout=config.dropout,
+            hidden_size=config.hidden_size,
+            alpha=config.alpha,
+            pos=config.pos,
         )
+        # PS-SRS layers accept an optional ``lambda_aux`` hyper-param.  We
+        # only pass it when the layer signature supports it AND the user
+        # actually overrode the default.  Other layers ignore it.
+        lambda_aux = getattr(config, "lambda_aux", None)
+        if lambda_aux is not None:
+            import inspect
+            sig = inspect.signature(self.embedding_cls.__init__)
+            if "lambda_aux" in sig.parameters:
+                kwargs["lambda_aux"] = lambda_aux
+        self.patch_embedding = self.embedding_cls(**kwargs)
 
 
 class SRSNet_RandomSP_Model(_SelectivityControlsSRSNetModel):

@@ -59,6 +59,11 @@ SELECTIVITY_VARIANTS = [
     "srs_paper.SRSNet_PSRS_HypernetAF",
 ]
 
+# Lambda sweep for the PS-SRS auxiliary loss.  Values 0 / 1e-3 / 1e-2
+# / 1e-1 cover four orders of magnitude including the "no aux" control
+# (0.0) and the original v1 value (1e-2).
+PSRS_SWEEP_LAMBDAS = [0.0, 1e-3, 1e-2, 1e-1]
+
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
 # Each rule is a dict; a task matches a rule if ALL listed fields equal the
 # rule's value. Tuple values mean "any of these". Add a new entry here when
@@ -479,6 +484,41 @@ def _selectivity_controls_tasks(scope, gpu, grid):
     return tasks
 
 
+def _psrs_sweep_tasks(scope, gpu):
+    """PS-SRS lambda sweep with z-scored auxiliary targets.
+
+    For each lambda in PSRS_SWEEP_LAMBDAS, generates the small
+    selectivity-controls grid (2 datasets x 2 horizons x 5 seeds = 20
+    tasks per lambda).  Lambda is injected into the model
+    hyperparameters via ``hyper_overrides``; lambda=0 is the clean
+    control (same architecture, no auxiliary signal).
+
+    Total: len(PSRS_SWEEP_LAMBDAS) * 20 = 80 tasks at the default
+    sweep grid.
+    """
+    tasks = []
+    for lam in PSRS_SWEEP_LAMBDAS:
+        # Tag the task_id with the lambda value so two runs of
+        # different lambdas do not collide in the metadata directory.
+        lam_tag = f"lam{lam:g}".replace(".", "p")
+        for dataset in SELECTIVITY_DATASETS_SMALL:
+            built = _official_tasks_for(
+                dataset,
+                "SRSNet",
+                scope=scope,
+                table=f"psrs_sweep_{lam_tag}",
+                gpu=gpu,
+                seeds=tuple(SELECTIVITY_SEEDS),
+                model_name="srs_paper.SRSNet_PSRS",
+                adapter=None,
+                hyper_overrides={"lambda_aux": float(lam)},
+            )
+            tasks.extend(
+                t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL)
+            )
+    return tasks
+
+
 def build_tasks(scope, gpu):
     tasks = []
     if scope == "main-compat":
@@ -493,6 +533,10 @@ def build_tasks(scope, gpu):
 
     if scope == "selectivity-controls-full":
         tasks.extend(_selectivity_controls_tasks(scope, gpu, grid="full"))
+        return tasks
+
+    if scope == "psrs-sweep":
+        tasks.extend(_psrs_sweep_tasks(scope, gpu))
         return tasks
 
     srs_seeds = PAPER_SRSNET_SEEDS if scope == "full-paper" else (2021,)
@@ -1209,6 +1253,10 @@ def main():
             # see scripts/repro/selectivity_extension_plan.md.
             "selectivity-controls",
             "selectivity-controls-full",
+            # PS-SRS lambda sweep with z-scored auxiliary targets,
+            # added after the audit identified scale issues with the v1
+            # auxiliary loss.
+            "psrs-sweep",
         ],
     )
     parser.add_argument("--gpu", default=os.environ.get("CUDA_VISIBLE_DEVICES", "0"))
