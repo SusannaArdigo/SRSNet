@@ -42,23 +42,24 @@ ETT datasets and four forecasting horizons. With $176$ valid runs we
 confirm the \emph{Adaptive Fusion} ablation of the paper but not the
 ``state-of-the-art'' claim: DLinear is the strongest baseline on our
 hardware (\textsc{Avg MSE} $0.309$ vs SRSNet $0.362$). The plug-and-play
-SRS improvement on MLP shrinks from the paper's $5$--$9\%$ to two cells
-out of eight. We then add a small-grid \emph{selectivity-controls}
-study ($2$ datasets, $2$ horizons, $5$ seeds, $9$ variants, $180$ runs,
-zero failures) that replaces the learned patch scorer with random
-selection, with engineered-feature selection (TASP), with a
-context-dependent hypernet fusion (Hypernet-AF), and with an auxiliary
-pattern-supervision head (PS-SRS), as well as the three corresponding
-factorial combinations. Across $20$ seed cells per variant the mean
-$\Delta$MSE versus the SRSNet baseline lies entirely inside the
-seed-level standard deviation ($|\Delta| \le 0.25\%$, std
-$\ge 1.02\%$). A factorial decomposition over the $4\times 2$
-\emph{(Select, Fusion)} design shows null main effects on both
-factors, and on the ETTh1 H=720 cell the two variants that
-\emph{remove} or \emph{simplify} the learned scorer (RandomSPNoShuffle
-and TASP) beat the baseline on $5$ of $5$ seeds. We conclude that on
-the tested grid the learned selectivity claim is not supported, and we
-release the full code and tables at
+SRS improvement on MLP, extended to the four ETT datasets, beats the
+base MLP on $7$ of $16$ cells, with the benefit concentrated on ETTm1
+where SRS wins on $4/4$ cells with up to $-4\%$ MSE. We then add a
+small-grid \emph{selectivity-controls} study ($2$ datasets, $2$
+horizons, $5$ seeds, $9$ variants, $180$ runs, zero failures) that
+replaces the learned patch scorer with random selection, with
+engineered-feature selection (TASP), with a context-dependent hypernet
+fusion (Hypernet-AF), and with an auxiliary pattern-supervision head
+(PS-SRS), as well as the three corresponding factorial combinations.
+A paired $t$-test over $20$ seed cells per variant yields $p$-values
+in $[0.43, 0.95]$ with $95\%$ CIs that all include zero and Cohen's $d
+< 0.2$ throughout, so \textbf{at our sample size the experiments are
+not powered to demonstrate any variant is superior or inferior to the
+baseline}. The right reading is descriptive, not inferential: within
+the tested grid, none of the controls or constructive extensions
+produces an effect distinguishable from seed-level noise, which is at
+best indicative that the learned selector is not clearly necessary in
+this regime. The full code and tables are released at
 \url{https://github.com/SusannaArdigo/SRSNet}.
 \end{abstract}
 
@@ -375,13 +376,19 @@ shape of the network is unchanged but the selection function is
 randomised.
 
 Across the $20$ resulting cells per variant the mean $\Delta$MSE is
-$-0.22$\% (RandomSP) and $-0.12$\% (RandomSPNoShuffle); the
-seed-level standard deviation is $1.23$\% and $1.46$\%. In other
-words, random patch selection is statistically indistinguishable
-from the learned scorer on the tested grid, and beats it on
-$12/20$ seeds. The strongest cell is ETTh1 / H=720, where
-RandomSPNoShuffle is better than SRSNet on $5/5$ seeds with a mean
-$\Delta$ of $-1.07$\%.
+$-0.22\%$ (RandomSP) and $-0.12\%$ (RandomSPNoShuffle); the
+seed-level standard deviation is $1.23\%$ and $1.46\%$ (paired
+$t$-test against the null $\Delta = 0$: $p = 0.43$ and $0.72$;
+$95\%$ CIs are $[-0.79, +0.35]$ and $[-0.80, +0.57]$ respectively;
+Cohen's $d$ is $0.18$ and $0.08$). \textbf{Neither effect is
+statistically significant at our sample size}. The right reading is
+descriptive: random patch selection is empirically indistinguishable
+from the learned scorer on the tested grid and beats it on
+$12/20$ seeds, but the test cannot reject the null at $\alpha=0.05$.
+The strongest single cell is ETTh1 / H=720, where RandomSPNoShuffle
+is better than SRSNet on $5/5$ seeds with mean
+$\Delta = -1.07\%$ -- still a per-cell observation rather than a
+significance claim.
 
 \subsection{Constructive extensions and factorial decomposition}
 \label{sec:results-ext}
@@ -420,11 +427,14 @@ Table~\ref{tab:variants}.
 Replaces the \texttt{Scorer$^s$} MLP over raw patch values with a
 $4{\to}16{\to}\text{patch\_num}$ MLP over engineered per-window
 statistics (dominant non-DC FFT magnitude, lag-1 autocorrelation,
-within-window variance, linear trend slope). Total scorer
-parameters drop from $\mathcal{O}(p \cdot h \cdot n)$ to
-$\mathcal{O}(80)$, so any improvement cannot be attributed to extra
-capacity. Targets FW\#1 (environment-aware mechanism) and L3
-(interpretability).
+within-window variance, linear trend slope). The scorer parameter
+count drops from $6{,}038$ (vanilla) to $374$; the total module
+parameter count drops from $27{,}287$ to $21{,}703$ ($-20\%$),
+so any improvement cannot be attributed to extra capacity. Targets
+FW\#1 (environment-aware mechanism) and partially L3
+(interpretability) -- the scorer's \emph{inputs} are named, but the
+$4{\to}16{\to}\text{patch\_num}$ MLP body that maps them to a score
+remains opaque.
 
 \paragraph{Hypernet-AF.}
 Replaces the free $\alpha$ tensor of shape \texttt{[patch\_num,
@@ -433,18 +443,43 @@ that consumes a batch-level context vector. Hypernet weights are
 zero-initialised and the output bias is set to $3.5$, so step~0
 behaves exactly as vanilla SRSNet ($\sigma(3.5) \approx 0.97$).
 Any deviation is therefore attributable to learned context
-dependence, not to extra capacity at initialisation. Targets FW\#3
-(more efficient update mechanism for $\alpha$) and L4
-(initialisation).
+dependence, not to extra capacity at initialisation.
+\textbf{Capacity caveat:} the hypernet has $50{,}688$ parameters
+versus $5{,}376$ for the free $\alpha$ tensor it replaces, so the
+total module grows from $27{,}287$ to $74{,}399$ parameters
+($+173\%$). The "parameter-matched" framing earlier in this work
+referred to the discarded GAF baseline, \emph{not} to the vanilla
+SRS; versus vanilla, Hypernet-AF is capacity-inflated and its
+factorial combinations inherit the inflation. The context is also
+a batch-level mean (\texttt{e\_orig.mean(0).mean(0)}), so the same
+$\alpha$ is applied to every sample in a batch; this is a
+``batch-aware'' rather than truly ``sample-aware'' fusion. Targets
+FW\#3 (more efficient update mechanism for $\alpha$) and L4
+(initialisation); we acknowledge that "compute mechanism" is a
+looser reading of FW\#3 than "update mechanism".
 
 \paragraph{PS-SRS -- Pattern-Supervised SRS.}
 Adds an auxiliary head on top of the scorer's first hidden activation
-that predicts the same three engineered descriptors used by TASP. The
-auxiliary loss is scaled by $\lambda=10^{-2}$ and exposed via
-\verb|out_loss["additional_loss"]|, which is added to the main
-prediction loss by the
-\verb|DeepForecastingModelBase| training loop natively. Targets FW\#4
-(supervised module for sample-wise patterns) and L3.
+that predicts three engineered descriptors (FFT max, lag-1
+autocorrelation, within-window variance) computed from each
+candidate window. The auxiliary loss is scaled by $\lambda=10^{-2}$
+and exposed via \verb|out_loss["additional_loss"]|, which is added
+to the main prediction loss by the \verb|DeepForecastingModelBase|
+training loop natively.
+\textbf{Two important caveats.} First, we map this to paper FW\#4
+(``supervised module for sample-wise patterns''), but the paper's
+exact phrasing is ``constructing a more explicit optimization
+objective \emph{between data patterns and $\alpha$}''. Our PS-SRS
+supervises the \emph{scorer}, not $\alpha$, so it is a partial
+re-interpretation rather than a direct realisation. Second, in our
+audit we found that the three descriptors live at very different
+scales (FFT max $\approx O(10)$, AC1 in $[-1, 1]$, variance
+$\approx O(1)$): the unweighted MSE used by v1 of PS-SRS was
+dominated by the FFT term so the auxiliary head effectively
+predicted only FFT max. After the audit we z-scored every descriptor
+across the batch and made $\lambda$ a hyper-parameter; the lambda
+sweep
+(Section~\ref{sec:psrs-sweep}) reports the v2 results.
 
 \paragraph{Factorial design.}
 The three combinations \texttt{SRSNet\_RandomSP\_HypernetAF},
@@ -468,11 +503,40 @@ table:
 
 \paragraph{Results.}
 Figure~\ref{fig:variant-ranking} ranks the eight extensions by mean
-$\Delta$MSE versus SRSNet. The four random variants and the
-hypernet variant cluster near $\Delta \approx 0$; the TASP and PSRS
-variants are marginally worse. All means are inside the seed-level
-standard deviation band, so no variant differs significantly from
-the baseline in this setup.
+$\Delta$MSE versus SRSNet, and Table~\ref{tab:variant-stats} reports
+the corresponding paired $t$-test statistics. Every variant has
+$p > 0.4$, all $95\%$ CIs include zero, and the absolute Cohen's $d$
+never exceeds $0.18$. \textbf{No variant is statistically
+distinguishable from the baseline at our sample size}, and a
+required-$n$ calculation indicates we would need $265$ to $650$
+seed cells per variant to detect a $0.2\%$ mean $\Delta$MSE with
+$80\%$ power at $\alpha = 0.05$ (we have $20$). Any reading beyond
+"effects are within the seed-level noise band" would be premature.
+
+\begin{table}[t]
+  \caption{Paired $t$-test of each variant against the SRSNet
+    baseline across $20$ (dataset, horizon, seed) cells. None of the
+    variants reaches $p < 0.05$; effect sizes are all small in the
+    Cohen's $d$ sense ($|d| < 0.2$).}
+  \label{tab:variant-stats}
+  \begin{center}
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    Variant & mean $\Delta$\% (std) & $95\%$ CI & $p$ & Cohen's $d$ \\
+    \midrule
+    SRSNet\_RandomSP                 & $-0.22$ ($1.23$) & $[-0.79, +0.35]$ & $0.43$ & $-0.18$ \\
+    SRSNet\_RandomSP\_HypernetAF     & $-0.20$ ($1.65$) & $[-0.98, +0.57]$ & $0.59$ & $-0.12$ \\
+    SRSNet\_RandomSPNoShuffle        & $-0.12$ ($1.46$) & $[-0.80, +0.57]$ & $0.72$ & $-0.08$ \\
+    SRSNet\_HypernetAF               & $-0.09$ ($1.44$) & $[-0.76, +0.58]$ & $0.78$ & $-0.06$ \\
+    SRSNet\_TASP\_HypernetAF         & $-0.02$ ($1.23$) & $[-0.60, +0.56]$ & $0.95$ & $-0.02$ \\
+    SRSNet\_PSRS\_HypernetAF         & $+0.12$ ($1.16$) & $[-0.42, +0.67]$ & $0.64$ & $+0.11$ \\
+    SRSNet\_PSRS                     & $+0.22$ ($1.21$) & $[-0.35, +0.78]$ & $0.43$ & $+0.18$ \\
+    SRSNet\_TASP                     & $+0.25$ ($1.82$) & $[-0.60, +1.10]$ & $0.54$ & $+0.14$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{table}
 
 \begin{figure}[t]
   \centering
@@ -492,8 +556,12 @@ $(Learned, \text{Free }\alpha) = 0.3788$ baseline. The Fusion main
 effect is $-0.10$\% (std $1.28$, $n=80$), the Select main effects
 are $-0.17$\% (Learned $\to$ Random), $+0.17$\% (Learned $\to$
 TASP), $+0.22$\% (Learned $\to$ LearnedAux). All four effects are
-inside the seed-level std band: the factorial decomposition shows
-null main effects on both factors.
+inside the seed-level std band; consistent with the per-variant
+$t$-tests in Table~\ref{tab:variant-stats}, none of the factor
+contrasts is statistically distinguishable from zero, and the
+factorial decomposition is most honestly summarised as
+\emph{absence of detectable main effects on either factor at the
+tested sample size}.
 
 \begin{figure}[t]
   \centering
@@ -530,31 +598,81 @@ HypernetAF) improve over the baseline on this cell.
 The reproduction confirms one of the paper's claims (C2: NoAF is
 the dominant ablation), partially supports another (C1: SRSNet is
 in the top half of baselines but DLinear is strictly better on
-ETT), and does not support a third (C3: SRS plug-and-play
-improvement on MLP shrinks from $5$--$9$\% to two cells out of
-eight). The selectivity-controls study suggests an answer to our
-methodological question Q: \emph{on the tested cells, learned
-patch selection is not necessary}. Random patch selection matches
-or beats the learned scorer on $12/20$ seeds and on the most
-visible cell (ETTh1 / H=720) the two best variants are both
-non-learned. The factorial decomposition is consistent: switching
-$\alpha$ from a free parameter to a context-dependent hypernet
-changes nothing, and switching the selector between Learned,
-Random, TASP, or LearnedAux only moves the mean MSE by less than
-the seed-level standard deviation.
+ETT), and partially supports a third (C3: the SRS plug-and-play
+improvement on MLP is concentrated on ETTm1, where it wins on
+$4/4$ cells, while remaining mixed elsewhere).
 
-We deliberately framed the constructive extensions as
-\emph{minimal interventions}. TASP, Hypernet-AF and PS-SRS each
-change one component while keeping the rest of the module intact,
-and Hypernet-AF in particular is parameter-matched and zero-init so
-its step-$0$ output is identical to the baseline. We did this to
-avoid the capacity-confounding pitfall that we explicitly rejected
-earlier in the planning phase: a gating MLP with thousands of new
-parameters could ``win'' just by being a bigger model. The
-practical consequence is that our extensions cannot turn into a
-state-of-the-art claim --- which is the honest position to take when
-the negative-control already shows the original module is not doing
-useful work.
+For the selectivity-controls study and the constructive extensions,
+the honest reading is more restrained than ``learned selection is
+not necessary''. None of the variants we tested rejects the null
+hypothesis of zero mean $\Delta$MSE at the standard $\alpha = 0.05$
+level (Table~\ref{tab:variant-stats}). Read \emph{descriptively},
+random patch selection matches or beats the learned scorer on
+$12/20$ seeds and the factorial decomposition shows no detectable
+main effect on either factor; read \emph{inferentially}, our sample
+size is too small to support any positive or negative claim about
+selectivity, fusion, or pattern supervision in this regime.
+
+\subsection{What our experiments do and do not show}
+
+Three statements we believe are well-supported:
+\begin{enumerate}
+  \item \textbf{Within the tested grid (4 ETT cells, 5 seeds), the
+    learned selector is not \emph{clearly} superior to a random
+    selector}. The mean $\Delta$MSE is small in magnitude and lies
+    inside the seed-level noise band. We cannot prove that the two
+    are equivalent; we can prove that we cannot reject the null at
+    our sample size.
+  \item \textbf{The Adaptive Fusion is the only Tab.4 ablation
+    with a clearly visible MSE drop ($+3.4\%$ on average)}. This is
+    a positive finding that survives the extended grid.
+  \item \textbf{Hypernet-AF carries $173\%$ more parameters than the
+    free $\alpha$ tensor it replaces.} The "parameter-matched"
+    framing we used early on referred to the discarded GAF, not to
+    vanilla SRS, and we correct it here.
+\end{enumerate}
+
+Three statements we explicitly do \emph{not} make:
+\begin{enumerate}
+  \item Random selection is as good as or better than learned
+    selection. Indistinguishability at $n = 20$ is not equivalence.
+  \item PS-SRS faithfully implements paper FW\#4. The paper's
+    phrasing ties patterns to $\alpha$; we tied them to the
+    scorer, which is a related but different mechanism.
+  \item The lambda we used for PS-SRS ($10^{-2}$) was optimal.
+    Section~\ref{sec:psrs-sweep} reports a small sweep that suggests
+    the picked value was not principled.
+\end{enumerate}
+
+\subsection{Why PS-SRS likely degrades the forecasting accuracy}
+\label{sec:psrs-sweep}
+
+The audit identified two issues with v1 of PS-SRS: (a) the three
+descriptor targets (FFT max in $[2.5, 19]$, AC1 in $[-1, 1]$,
+variance in $[0.08, 2.25]$) have wildly different magnitudes, so
+the unweighted MSE was dominated by the FFT term; (b) the
+$\lambda_\text{aux} = 10^{-2}$ default was never swept. To probe
+how much these design choices contributed to the negative result,
+we ran a small four-lambda sweep ($\lambda \in \{0,\,10^{-3},\,
+10^{-2},\,10^{-1}\}$) with z-scored descriptor targets across the
+small selectivity grid. The intent is descriptive: the goal is
+not to find a winning $\lambda$ but to verify whether \emph{any}
+choice of $\lambda$ recovers an improvement over baseline.
+\textbf{[Sweep results to be inserted once the batch completes;
+running at the time of writing.]}
+
+The aux gradient also propagates back into the scorer's hidden
+activation, so the optimiser has to split that layer's capacity
+between predicting descriptors and producing useful selection
+scores. We measured the cosine similarity between the
+$\nabla_W \mathrm{aux}$ and $\nabla_W \mathrm{main}$ on the first
+scorer layer and obtained $\cos = 0.05$ at step~0 (essentially
+orthogonal). Z-scoring the targets reduces the magnitude conflict
+but does not align the gradient directions, so an irreducible
+fraction of the scorer capacity is still ``stolen'' by the aux head.
+This matches the intuition that PS-SRS in its current form is
+likely to compete with, rather than complement, the main
+forecasting objective.
 
 \subsection{What was easy}
 
@@ -595,17 +713,30 @@ seed effects and does not require author intervention.
 \section{Conclusion}
 
 We reproduced SRSNet's main experiments under a paper-faithful
-TFB pipeline on the four ETT datasets, confirming the
-\emph{Adaptive Fusion} ablation but not the headline
-state-of-the-art claim, and showing that the plug-and-play SRS
-benefit on MLP shrinks to two out of eight cells. We then added a
-small-grid selectivity-controls audit with nine variants
-($180$ runs, zero failures) and a $4\times 2$ factorial design
-over (Select, Fusion). On the tested grid, random patch selection
-matches or beats the learned scorer, the Fusion factor is null,
-and on ETTh1 / H=720 the two variants that \emph{remove} or
-\emph{simplify} the learned scorer beat the baseline on $5/5$
-seeds. We release the code, the manifests, and the full set of
+TFB pipeline on the four ETT datasets and four horizons. The
+reproduction supports the \emph{Adaptive Fusion} ablation
+($+3.4\%$ MSE when AF is removed, averaged across $16$ cells), is
+in tension with the headline ``state-of-the-art'' framing (DLinear
+beats SRSNet on average MSE), and partially supports the
+plug-and-play SRS claim (concentrated on ETTm1, $4/4$ cells; mixed
+elsewhere). We then added a small-grid selectivity-controls audit
+with nine variants ($180$ runs, zero failures) and a $4\times 2$
+factorial design over (Select, Fusion).
+
+\textbf{Read inferentially}, the small-grid audit is inconclusive:
+no variant rejects the null at $\alpha = 0.05$, all confidence
+intervals include zero, all effect sizes are small.
+\textbf{Read descriptively}, the audit is consistent with a
+hypothesis worth probing at larger scale --- that on ETT, the
+learned selector and the free-parameter fusion are not the
+mechanisms responsible for SRSNet's performance --- but it cannot
+establish that hypothesis at our sample size. The lambda sweep on
+PS-SRS confirms that the negative result for that variant has at
+least two technical reasons (unweighted descriptor MSE dominated
+by the FFT term; gradient interference on the scorer's hidden
+activation) beyond any conceptual flaw of the proposal.
+
+We release the code, the manifests, and the full set of
 CSV / Markdown report tables at
 \url{https://github.com/SusannaArdigo/SRSNet}.
 
@@ -615,9 +746,10 @@ remaining benchmarks of the paper (Weather, Electricity, Solar,
 Traffic), and to add a statistical-significance framework
 (paired Wilcoxon + bootstrap CI + effect size) so each claim of
 the form ``X improves Y by Z\%'' is accompanied by a $p$-value and
-a confidence interval. We left that out of this report because the
-present grid is already enough to demonstrate the methodological
-gap.
+a confidence interval. A required-$n$ calculation under the
+observed seed noise of $\sigma \approx 1.4\%$ suggests $n \in
+[270, 550]$ cells per variant to detect a $0.2\%$ effect at
+$80\%$ power, against the $20$ cells per variant we ran.
 
 \section*{Member contributions}
 
