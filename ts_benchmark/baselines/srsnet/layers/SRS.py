@@ -37,12 +37,12 @@ class SRS(nn.Module):
     Selective Representation Space block (Wu et al., NeurIPS 2025).
 
     Pipeline per batch (input arrives already RevIN-normalized by SRSNetModel):
-        1. Pad the input on the right so the last patch fits exactly.
-        2. ORIGINAL view  -> adjacent patching with stride         (conventional)
-        3. RECONSTRUCTIVE view -> stride-1 candidates + select + shuffle
-        4. Embed both views with two separate Linear projections
-        5. Adaptive Fusion: learned convex combination via sigmoid(alpha)
-        6. Add positional embedding, dropout, return
+        1. Pad the input on the right so the last patch fits exactly.       (Sec. 3.1)
+        2. ORIGINAL view  -> adjacent patching with stride                  (Sec. 3.1, adjacent patching)
+        3. RECONSTRUCTIVE view -> stride-1 candidates + select + shuffle    (Sec. 3.2 eq. 1-5 + Sec. 3.3 eq. 6-10, selective patching + dynamic reassembly)
+        4. Embed both views with two separate Linear projections            (Sec. 3.4, eq. 11-12)
+        5. Adaptive Fusion: learned convex combination via sigmoid(alpha)   (Sec. 3.4, eq. 13)
+        6. Add positional embedding, dropout, return                        (Sec. 3.4, eq. 14)
 
     Paper equations are referenced inline (e.g. `# eq. 2:`) right above each
     implementation line. 
