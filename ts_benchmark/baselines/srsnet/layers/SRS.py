@@ -43,6 +43,17 @@ class SRS(nn.Module):
         4. Embed both views with two separate Linear projections
         5. Adaptive Fusion: learned convex combination via sigmoid(alpha)
         6. Add positional embedding, dropout, return
+
+    Paper equations are referenced inline (e.g. `# eq. 2:`) right above each
+    implementation line. 
+    Notation: 
+        [ ] N=channels,
+        [ ] T=lookback,
+        [ ] p=patch_len,
+        [ ] s=stride,
+        [ ] n=patch_num,
+        [ ] K=(n-1)*s+1 candidates,
+        [ ] d=d_model.
     """
 
     def __init__(self, d_model, patch_len, stride, seq_len, dropout, hidden_size, alpha=2.0, pos=True):
@@ -55,43 +66,46 @@ class SRS(nn.Module):
 
         # Conventional adjacent patching produces exactly patch_num patches
         self.patch_num = math.ceil((self.seq_len - self.patch_len) / self.stride) + 1               # = ceil((T - p) / s) + 1
+
         # Right-padding so the last adjacent patch fits without overflow
         self.padding = self.patch_len + (self.patch_num - 1) * self.stride - self.seq_len           # extra samples needed
+
         # Replication padding: repeats the last value (paper-compatible)
-        self.padding_patch_layer = nn.ReplicationPad1d((0, self.padding))                           # pad only on the right
+        self.padding_patch_layer = nn.ReplicationPad1d((0, self.padding))                           # [B, N, T] -> [B, N, T+padding]
 
         # --- Selective Patching scorer^s (paper Sec. 3.2) --------------------
         # For each candidate patch (stride=1), output patch_num scores
         # → one score per output "slot"; we'll argmax along the candidate axis
+        # Module maps:  [B, N, K, p] -> [B, N, K, n]
         self.scorer_select = nn.Sequential(
-            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                                      # patch_len -> hidden
-            nn.Linear(hidden_size, self.patch_num)                                                  # hidden -> patch_num scores
+            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                                      # [B, N, K, p] -> [B, N, K, h]
+            nn.Linear(hidden_size, self.patch_num)                                                  # [B, N, K, h] -> [B, N, K, n]
         )
 
         # --- Dynamic Reassembly scorer^r (paper Sec. 3.3) --------------------
         # ONE score per already-selected patch → we'll argsort to get the new order
+        # Module maps:  [B, N, n, p] -> [B, N, n, 1]
         self.scorer_shuffle = nn.Sequential(
-            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                                      # patch_len -> hidden
-            nn.Linear(hidden_size, 1)                                                               # hidden -> 1 score
+            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                                      # [B, N, n, p] -> [B, N, n, h]
+            nn.Linear(hidden_size, 1)                                                               # [B, N, n, h] -> [B, N, n, 1]
         )
 
         # --- Patch embeddings: two parallel linear projections ----------------
         # The Adaptive Fusion (Sec. 3.4) needs TWO separate embeddings, one per view
-        self.value_embedding_org = nn.Linear(patch_len, d_model, bias=False)                        # PatchEmbedding^1  (eq. 12)
-        self.value_embedding_rec = nn.Linear(patch_len, d_model, bias=False)                        # PatchEmbedding^2  (eq. 12)
+        self.value_embedding_org = nn.Linear(patch_len, d_model, bias=False)                        # [..., p] -> [..., d_model]  PatchEmbedding^1 (eq. 12)
+        self.value_embedding_rec = nn.Linear(patch_len, d_model, bias=False)                        # [..., p] -> [..., d_model]  PatchEmbedding^2 (eq. 12)
 
         # --- Positional embedding (sinusoidal, Vaswani et al. 2017) ----------
         if pos:
-            self.position_embedding = PositionalEmbedding(d_model)
-        self.pos = pos
+            self.position_embedding = PositionalEmbedding(d_model)                                  # buffer pe: [1, max_len, d_model]
+        self.pos = pos                                                                              # bool   -- enable / disable PE
 
         # Final dropout on the fused embedding
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)                                                          # float prob -- no shape change
 
         # --- Adaptive Fusion weight (alpha in eq. 13) ------------------------
-        # Shape (patch_num, d_model) → learned per-position, per-channel weight
         # Init at 2.0 → sigmoid(2.0) ≈ 0.88 ⇒ at start we trust the original view
-        self.alpha = nn.Parameter(torch.ones(self.patch_num, d_model) * alpha)
+        self.alpha = nn.Parameter(torch.ones(self.patch_num, d_model) * alpha)                      # [n, d_model]  -- learnable per-position, per-channel weight
 
     def _origin_view(self, x):
         """Conventional adjacent patching (the 'standard' view)."""
@@ -114,73 +128,76 @@ class SRS(nn.Module):
         return rec_patches
 
     def _select(self, x_rec):
-        """Selective Patching: pick the best candidate for each output slot."""
-        # x_rec: [B, N, K, patch_len] → score every candidate, output patch_num scores each
-        scores = self.scorer_select(x_rec)                                                          # [B, N, K, patch_num]
-        # For each output slot, take the candidate with the highest score (argmax along K)
-        indices = torch.argmax(scores, dim=-2, keepdim=True)                                        # [B, N, 1, patch_num]
-        # Gather the max scores → we need them for the straight-through gradient trick (eq. 3-5)
-        max_scores = torch.gather(input=scores, dim=-2, index=indices)                              # [B, N, 1, patch_num]
-        non_zero_mask = max_scores != 0
-        # Detached reciprocal: only max_scores carries the gradient
-        inv = (1 / max_scores[non_zero_mask]).detach()                                              # stop-grad on 1/score
+        """Selective Patching (paper Sec. 3.2): pick the best candidate for each output slot."""
+        # x_rec: [B, N, K, p]  =  P' in the paper (all candidate patches with stride=1)
 
-        # Expand indices along patch_len so we can gather the actual patch values
-        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)                 # [B, N, patch_num, patch_len]
-        # Pull the selected patches out of the candidate tensor
-        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)                   # [B, N, patch_num, patch_len]
+        # eq. 1 + 2:  S^s = Scorer^s(P'),  I^s = Argmax(S^s)
+        scores = self.scorer_select(x_rec)                                  # [B, N, K, n]   -- score every candidate (n scores each)
+        indices = torch.argmax(scores, dim=-2, keepdim=True)                # [B, N, 1, n]   -- for each slot pick the top-scoring candidate
 
-        # Straight-through estimator: value = patches * (max_score / max_score)_detach
-        # → numerically identity, but gradient flows back through max_score → scorer_select
-        max_scores[non_zero_mask] *= inv
-        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches                        # [B, N, patch_num, patch_len]
+        # eq. 3:  S^s_max = S^s[I^s],  S^s_inv = detach(1/S^s_max)
+        max_scores = torch.gather(input=scores, dim=-2, index=indices)      # [B, N, 1, n]   -- pull out the winning scores
+        non_zero_mask = max_scores != 0                                     # [B, N, 1, n]   -- True where score != 0
+        inv = (1 / max_scores[non_zero_mask]).detach()                      # 1D flat        -- detached reciprocal (no grad through it)
+
+        # eq. 4 part 1:  P^s_max = P'[I^s]
+        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)   # [B, N, n, p] -- expand indices along patch_len
+        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)     # [B, N, n, p] -- gather the n winning patches
+
+        # eq. 4 part 2 + eq. 5:  E^s = S^s_max ⊙ S^s_inv,  P~^s_max = P^s_max ⊙ E^s
+        # Straight-through trick: max_scores * inv == 1 numerically,
+        # but the gradient still flows through max_scores -> scorer_select.
+        max_scores[non_zero_mask] *= inv                                              # in-place    -- build E^s (value = 1)
+        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches          # [B, N, n, p] -- multiply by "1" → bridges the gradient
 
         return selected_patches
 
     def _shuffle(self, selected_patches):
-        """Dynamic Reassembly: argsort the selected patches by a learned score."""
-        # selected_patches: [B, N, patch_num, patch_len] → ONE score per patch
-        shuffle_scores = self.scorer_shuffle(selected_patches)                                      # [B, N, patch_num, 1]
-        # Sort indices by score (descending) → new permutation of the patch axis
-        shuffle_indices = torch.argsort(input=shuffle_scores, dim=-2, descending=True)              # [B, N, patch_num, 1]
-        # Gather the scores in sorted order
-        shuffled_scores = torch.gather(input=shuffle_scores, index=shuffle_indices, dim=-2)         # [B, N, patch_num, 1]
-        non_zero_mask = shuffled_scores != 0
-        # Same detached reciprocal trick as _select
-        inv = (1 / shuffled_scores[non_zero_mask]).detach()
+        """Dynamic Reassembly (paper Sec. 3.3): reorder the selected patches by a learned score."""
+        # selected_patches: [B, N, n, p]  =  P~^s_max (output of Selective Patching)
 
-        # Broadcast the indices on the patch_len axis to actually reorder the patches
-        shuffle_patch_indices = shuffle_indices.repeat(1, 1, 1, self.patch_len)                     # [B, N, patch_num, patch_len]
-        shuffled_patches = torch.gather(input=selected_patches, index=shuffle_patch_indices, dim=-2)# [B, N, patch_num, patch_len]
-        # Straight-through estimator (eq. 8-10): identity in value, gradient via shuffled_scores
-        shuffled_scores[non_zero_mask] *= inv
-        shuffled_patches = shuffled_scores * shuffled_patches                                       # [B, N, patch_num, patch_len]
+        # eq. 6 + 7:  S^r = Scorer^r(P~^s_max),  I^r = Argsort(S^r)
+        shuffle_scores = self.scorer_shuffle(selected_patches)                  # [B, N, n, 1]   -- one score per selected patch
+        shuffle_indices = torch.argsort(shuffle_scores, dim=-2, descending=True)# [B, N, n, 1]   -- sort indices by score (high → low)
+
+        # eq. 8:  S^r_sort = S^r[I^r],  S^r_inv = detach(1/S^r_sort)
+        shuffled_scores = torch.gather(shuffle_scores, dim=-2, index=shuffle_indices)   # [B, N, n, 1] -- pull out the sorted scores
+        non_zero_mask = shuffled_scores != 0                                            # [B, N, n, 1] -- True where score != 0
+        inv = (1 / shuffled_scores[non_zero_mask]).detach()                             # 1D flat     -- detached reciprocal (same trick as _select)
+
+        # eq. 9 part 1:  P^r_sort = P~^s_max[I^r]
+        shuffle_patch_indices = shuffle_indices.repeat(1, 1, 1, self.patch_len)         # [B, N, n, p] -- expand indices along patch_len
+        shuffled_patches = torch.gather(selected_patches, dim=-2, index=shuffle_patch_indices)  # [B, N, n, p] -- reorder the patches
+
+        # eq. 9 part 2 + eq. 10:  E^r = S^r_sort ⊙ S^r_inv,  P~ = P^r_sort ⊙ E^r
+        # Same straight-through trick as _select: value=1, gradient flows through shuffled_scores.
+        shuffled_scores[non_zero_mask] *= inv                                           # in-place    -- build E^r (value = 1)
+        shuffled_patches = shuffled_scores * shuffled_patches                           # [B, N, n, p] -- multiply by "1" → bridges the gradient
 
         return shuffled_patches
 
     def forward(self, x):
-        # x: [B, N, T] -- channel-independent, already RevIN-normalized upstream by SRSNetModel
-        n_vars = x.shape[1]                                                                         # number of channels (N)
-        # Pad on the right so the last adjacent patch fits exactly
-        x = self.padding_patch_layer(x)                                                             # [B, N, T_padded]
+        # x: [B, N, T]  -- channel-independent, already RevIN-normalized upstream by SRSNetModel
+        n_vars = x.shape[1]                                             # scalar           -- number of channels (N)
 
-        # === Reconstructive view (selective patching + dynamic reassembly) ===
-        rec_repr_space = self._rec_view(x)                                                          # [B*N, patch_num, patch_len]
+        # Sec. 3.1 padding:  X -> X' in R^(N x (p + (n-1)·s))
+        x = self.padding_patch_layer(x)                                 # [B, N, T_padded] -- pad on the right so the last patch fits
 
-        # === Original view (conventional adjacent patching) ===
-        original_repr_space = self._origin_view(x)                                                  # [B*N, patch_num, patch_len]
+        # Reconstructive view P~ (Sec. 3.2 + 3.3 inside _rec_view)
+        rec_repr_space = self._rec_view(x)                              # [B*N, n, p]      -- _select -> _shuffle
 
-        # === Adaptive Fusion (paper eq. 13) ===
-        weight = torch.sigmoid(self.alpha)                                                          # alpha -> (0,1)^(patch_num, d_model)
-        # Convex combination of the two embedded views:
-        #     E_tilde = alpha * E_original + (1 - alpha) * E_selective
+        # Original view P (conventional adjacent patching)
+        original_repr_space = self._origin_view(x)                      # [B*N, n, p]      -- adjacent unfold with stride
+
+        # eq. 13:  E~ = alpha ⊙ E^c + (1 - alpha) ⊙ E^s
+        weight = torch.sigmoid(self.alpha)                              # [n, d_model]     -- alpha -> (0,1)^(n x d_model)
         embedding = weight * self.value_embedding_org(original_repr_space) \
-                    + (1 - weight) * self.value_embedding_rec(rec_repr_space)                       # [B*N, patch_num, d_model]
+                    + (1 - weight) * self.value_embedding_rec(rec_repr_space)   # [B*N, n, d_model] -- convex combo of the two embedded views
 
-        # === Positional embedding (paper eq. 14) ===
+        # eq. 14:  E = E~ + PositionEmbedding(P)
         if self.pos:
-            position_embedding = self.position_embedding(original_repr_space)                       # [1, patch_num, d_model]
-            embedding = embedding + position_embedding
+            position_embedding = self.position_embedding(original_repr_space)   # [1, n, d_model]   -- sinusoidal PE (Vaswani 2017)
+            embedding = embedding + position_embedding                          # [B*N, n, d_model] -- add position info
 
-        # Final dropout for regularization
-        return self.dropout(embedding), n_vars
+        # Dropout (not in the paper's formula, standard regularization)
+        return self.dropout(embedding), n_vars                                  # [B*N, n, d_model], int
