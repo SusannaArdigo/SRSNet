@@ -581,6 +581,45 @@ PSRS_SWEEP_VARIANTS = [
 ]
 
 
+# Backbone extension (Transformer Encoder over SRS embeddings).
+# Tests the paper's claim 'a linear head is enough' (Sec. 4) by inserting
+# a TransformerEncoder between SRS and FlattenHead. 4 variants:
+#   - baseline + Encoder
+#   - TASP + Encoder
+#   - HypernetAF + Encoder
+#   - PSRS + Encoder
+# Total: 4 variants x 2 datasets x 2 horizons x 5 seeds = 80 tasks.
+ENCODER_EXT_VARIANTS = [
+    "srs_paper.SRSNet_TransformerEncoder",
+    "srs_paper.SRSNet_TASP_TransformerEncoder",
+    "srs_paper.SRSNet_HypernetAF_TransformerEncoder",
+    "srs_paper.SRSNet_PSRS_TransformerEncoder",
+]
+
+
+def _encoder_extension_tasks(scope, gpu):
+    """Backbone extension: SRSNet + Transformer Encoder, alone and in combo with extensions.
+
+    Runs the small grid (2 datasets x 2 horizons x 5 seeds) for each of
+    the 4 encoder variants. Total: 80 tasks.
+    """
+    tasks = []
+    for dataset in SELECTIVITY_DATASETS_SMALL:
+        for model_name in ENCODER_EXT_VARIANTS:
+            built = _official_tasks_for(
+                dataset,
+                "SRSNet",
+                scope=scope,
+                table="encoder_extension",
+                gpu=gpu,
+                seeds=tuple(SELECTIVITY_SEEDS),
+                model_name=model_name,
+                adapter=None,
+            )
+            tasks.extend(t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL))
+    return tasks
+
+
 def _psrs_sweep_tasks(scope, gpu):
     """PS-SRS lambda sweep: for each (variant, lambda) run the small grid (20 tasks each).
 
@@ -634,6 +673,10 @@ def build_tasks(scope, gpu):
 
     if scope == "psrs-sweep":
         tasks.extend(_psrs_sweep_tasks(scope, gpu))
+        return tasks
+
+    if scope == "encoder-extension":
+        tasks.extend(_encoder_extension_tasks(scope, gpu))
         return tasks
 
     srs_seeds = PAPER_SRSNET_SEEDS if scope == "full-paper" else (2021,)
@@ -1419,6 +1462,9 @@ def main():
             # added after the audit identified scale issues with the v1
             # auxiliary loss.
             "psrs-sweep",
+            # Backbone extension: SRS + TransformerEncoder + FlattenHead.
+            # Tests the paper's claim 'a linear head is enough' (Sec. 4).
+            "encoder-extension",
         ],
     )
     parser.add_argument("--gpu", default=os.environ.get("CUDA_VISIBLE_DEVICES", "0"))

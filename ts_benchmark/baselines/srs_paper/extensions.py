@@ -684,6 +684,134 @@ class SRSNet_PSRS_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
         return out_loss
 
 
+# ---------------------------------------------------------------------------
+# Backbone extension: SRS + TransformerEncoder + FlattenHead
+# ---------------------------------------------------------------------------
+# Tests the paper's claim (Sec. 3.4 + Sec. 4) that a linear head over the
+# SRS embeddings is enough. Inserts a real Transformer Encoder between
+# the SRS output and the linear head and lets us measure the delta.
+#
+# Two extra hyper-params (read from config via getattr, defaults provided):
+#   encoder_n_heads  : number of self-attention heads (default 8)
+#   encoder_n_layers : number of Transformer encoder layers (default 2)
+
+
+class _SRSNetWithEncoderModel(SRSNetModel):
+    """SRSNet baseline + Transformer Encoder between patch_embedding and head.
+
+    Same RevIN + SRS + FlattenHead as the paper, just with an encoder
+    block inserted on the SRS embeddings before they reach the head.
+    """
+
+    def __init__(self, config):
+        super().__init__(config)                                                # builds revin, patch_embedding, head
+        n_heads = getattr(config, "encoder_n_heads", 8)
+        n_layers = getattr(config, "encoder_n_layers", 2)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model, nhead=n_heads,
+            dim_feedforward=4 * config.d_model,
+            dropout=config.dropout, activation='gelu', batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)    # [B*N, n, d] -> [B*N, n, d]
+
+    def forward(self, x_enc):
+        # x_enc: [B, T, N]
+        x_enc = self.revin(x_enc, 'norm')                                       # [B, T, N]    -- Sec. 3.1 norm
+        x_enc = x_enc.permute(0, 2, 1)                                          # [B, N, T]    -- channel-independent layout
+
+        enc_out, n_vars = self.patch_embedding(x_enc)                           # [B*N, n, d]  -- SRS module (Sec. 3.2-3.4)
+        enc_out = self.encoder(enc_out)                                         # [B*N, n, d]  -- self-attention over patches  ← NEW
+
+        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+        enc_out = enc_out.permute(0, 1, 3, 2)                                   # [B, N, d, n] -- FlattenHead wants d before n
+
+        dec_out = self.head(enc_out).permute(0, 2, 1)                           # [B, L, N]    -- forecast in normalized scale
+        return self.revin(dec_out, 'denorm')                                    # [B, L, N]    -- back to original scale
+
+
+class _SelectivityControlsSRSNetEncoderModel(_SelectivityControlsSRSNetModel):
+    """Selectivity-controls model (TASP / HypernetAF / PSRS / ...) + Transformer Encoder.
+
+    Combines the 'swap patch_embedding' machinery of
+    ``_SelectivityControlsSRSNetModel`` with the Transformer Encoder addition
+    of ``_SRSNetWithEncoderModel``.
+    """
+
+    def __init__(self, config):
+        super().__init__(config)                                                # swaps patch_embedding via embedding_cls
+        n_heads = getattr(config, "encoder_n_heads", 8)
+        n_layers = getattr(config, "encoder_n_layers", 2)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model, nhead=n_heads,
+            dim_feedforward=4 * config.d_model,
+            dropout=config.dropout, activation='gelu', batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+
+    def forward(self, x_enc):
+        # Same shape pipeline as _SRSNetWithEncoderModel, with the swapped patch_embedding
+        x_enc = self.revin(x_enc, 'norm')
+        x_enc = x_enc.permute(0, 2, 1)
+        enc_out, n_vars = self.patch_embedding(x_enc)
+        enc_out = self.encoder(enc_out)
+        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+        enc_out = enc_out.permute(0, 1, 3, 2)
+        dec_out = self.head(enc_out).permute(0, 2, 1)
+        return self.revin(dec_out, 'denorm')
+
+
+class SRSNet_TASP_TransformerEncoder_Model(_SelectivityControlsSRSNetEncoderModel):
+    embedding_cls = SRSTimeAware
+
+
+class SRSNet_HypernetAF_TransformerEncoder_Model(_SelectivityControlsSRSNetEncoderModel):
+    embedding_cls = SRSHypernetAF
+
+
+class SRSNet_PSRS_TransformerEncoder_Model(_SelectivityControlsSRSNetEncoderModel):
+    embedding_cls = SRSPatternSupervised
+
+
+# --- TFB wrappers for the encoder variants -----------------------------------
+class SRSNet_TransformerEncoder(_SelectivityControlsSRSNet):
+    """Baseline SRSNet + Transformer Encoder. Tests 'linear head is enough'."""
+
+    variant_name = "SRSNet_TransformerEncoder"
+    model_cls = _SRSNetWithEncoderModel
+
+
+class SRSNet_TASP_TransformerEncoder(_SelectivityControlsSRSNet):
+    """TASP select + Transformer Encoder (combo across Select x Backbone)."""
+
+    variant_name = "SRSNet_TASP_TransformerEncoder"
+    model_cls = SRSNet_TASP_TransformerEncoder_Model
+
+
+class SRSNet_HypernetAF_TransformerEncoder(_SelectivityControlsSRSNet):
+    """Hypernet-AF fusion + Transformer Encoder (combo across Fusion x Backbone)."""
+
+    variant_name = "SRSNet_HypernetAF_TransformerEncoder"
+    model_cls = SRSNet_HypernetAF_TransformerEncoder_Model
+
+
+class SRSNet_PSRS_TransformerEncoder(_SelectivityControlsSRSNet):
+    """PS-SRS aux loss + Transformer Encoder (combo across Select-aux x Backbone).
+
+    Same auxiliary-loss exposure as ``SRSNet_PSRS`` / ``SRSNet_PSRS_HypernetAF``.
+    """
+
+    variant_name = "SRSNet_PSRS_TransformerEncoder"
+    model_cls = SRSNet_PSRS_TransformerEncoder_Model
+
+    def _process(self, input, target, input_mark, target_mark):
+        output = self.model(input)
+        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
+        out_loss = {"output": output}
+        if aux is not None and self.model.training:
+            out_loss["additional_loss"] = aux
+        return out_loss
+
+
 # Backwards compatibility alias: the old broad-extensions code referenced
 # ``srs_paper.SRSNet_RandomSRS``.  Keep that name as an alias so any stale
 # tasks in older manifests still resolve, but emit no behaviour difference.
@@ -703,6 +831,11 @@ for _cls in (
     SRSNet_TASP_NoShuffle_HypernetAF,
     SRSNet_RandomSP_NoShuffle_HypernetAF,
     SRSNet_PSRS_NoShuffle_HypernetAF,
+    # Backbone extension (Transformer Encoder)
+    SRSNet_TransformerEncoder,
+    SRSNet_TASP_TransformerEncoder,
+    SRSNet_HypernetAF_TransformerEncoder,
+    SRSNet_PSRS_TransformerEncoder,
 ):
     _cls.MODEL_HYPER_PARAMS = MODEL_HYPER_PARAMS
 
@@ -737,6 +870,11 @@ __all__ = [
     "SRSNet_TASP_NoShuffle_HypernetAF",
     "SRSNet_RandomSP_NoShuffle_HypernetAF",
     "SRSNet_PSRS_NoShuffle_HypernetAF",
+    # Backbone extension (Transformer Encoder)
+    "SRSNet_TransformerEncoder",
+    "SRSNet_TASP_TransformerEncoder",
+    "SRSNet_HypernetAF_TransformerEncoder",
+    "SRSNet_PSRS_TransformerEncoder",
     # Backwards-compat alias
     "SRSNet_RandomSRS",
 ]
