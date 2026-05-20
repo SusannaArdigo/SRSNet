@@ -1,10 +1,38 @@
 #!/usr/bin/env python3
+"""One-batch efficiency profiler for paper Table 5/6.
+
+Bypasses the full TFB pipeline and measures, on synthetic random
+tensors, per-batch wall-clock and peak VRAM for training + inference
+at the paper's H720 setting (seq_len=512, horizon=720, batch_size=32).
+
+Why bypass? A full rolling-forecast run mixes in data-loader and
+metric overhead. We want the GPU-only number, like the paper.
+
+Called as a subprocess by paper_repro.py for every table5/6 row
+(full-paper scope only). Writes a JSON to --out which collect() picks
+up via _read_json_result.
+
+Layout:
+  A. Constants (ENC_IN per dataset)
+  B. Vendor command resolution
+  C. Wrapper construction
+  D. Profiling loop
+  E. CLI
+"""
+
 import argparse
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+
+# ===========================================================================
+# Section A -- Constants
+# ===========================================================================
+# ROOT/OUT_ROOT match paper_repro.py so output lands next to the other
+# repro artefacts. ENC_IN is the per-dataset channel count -- we need it
+# to allocate the random input tensor with the right shape.
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT_ROOT = ROOT / "repro_results"
@@ -20,7 +48,16 @@ ENC_IN = {
 }
 
 
+# ===========================================================================
+# Section B -- Vendor command resolution
+# ===========================================================================
+# Reuse paper_repro.py's vendor-script reader to find the H720 command
+# for (dataset, model), then force the Table 5/6 overrides
+# (seq_len=512, batch_size=32, train_drop_last=False). Plugin rows
+# start from the base model's script and just swap model_name + adapter.
+
 def _model_command(dataset, model):
+    """Find the official H720 command + apply Table 5/6 overrides."""
     from scripts.repro.paper_repro import _horizon, _read_script_commands, _json_option
 
     base_model = model
@@ -42,7 +79,14 @@ def _model_command(dataset, model):
     raise SystemExit(f"No H720 official command found for {dataset}/{base_model}")
 
 
+# ===========================================================================
+# Section C -- Wrapper construction
+# ===========================================================================
+# Build the same TFB wrapper the pipeline would build, minus the
+# dataset/loader bits. We just need a live nn.Module on GPU.
+
 def _load_wrapper(dataset, model, gpu):
+    """Build the TFB wrapper at H720 and move it to the GPU."""
     import torch
     from scripts.repro.paper_repro import _option
     from ts_benchmark.models.model_loader import get_models
@@ -71,7 +115,15 @@ def _load_wrapper(dataset, model, gpu):
     return wrapper, params, device
 
 
+# ===========================================================================
+# Section D -- Profiling loop
+# ===========================================================================
+# Warm-up + timed iterations with cuda.synchronize around each phase,
+# plus reset_peak_memory_stats to isolate training vs inference VRAM.
+# Inputs are torch.randn -- we want GPU compute time, not forecast quality.
+
 def profile(dataset, model, gpu, iters, warmup):
+    """Run warmup + iters batches and return timing + VRAM stats."""
     import torch
 
     wrapper, params, device = _load_wrapper(dataset, model, gpu)
@@ -142,7 +194,14 @@ def profile(dataset, model, gpu, iters, warmup):
     }
 
 
+# ===========================================================================
+# Section E -- CLI
+# ===========================================================================
+# Called by paper_repro.py with --scope/--table/--dataset/--model/--gpu/--out.
+# Writes one JSON per (dataset, model) and prints the path.
+
 def main():
+    """Parse args, run profile, write JSON to --out."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--scope", required=True)
     parser.add_argument("--table", required=True)

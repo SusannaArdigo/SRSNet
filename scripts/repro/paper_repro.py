@@ -1,34 +1,32 @@
 #!/usr/bin/env python3
-"""SRSNet paper-faithful reproduction orchestrator.
+"""SRSNet paper repro runner.
 
-This file is the entry point we use to run hundreds of TFB tasks
-across a handful of scoped studies (lite-paper, main-compat,
-selectivity-controls, psrs-sweep).  It builds the command for each
-task by reading the vendor ``.sh`` scripts under
-``scripts/multivariate_forecast/<dataset>_script/<model>.sh``,
-normalises and overrides them, persists per-task metadata so that
-re-runs are idempotent, handles OOM retries by halving batch size,
-and finally aggregates results into a single ``summary.csv``.
+Orchestrator we use to run hundreds of TFB tasks across a few scoped
+studies (lite-paper, main-compat, selectivity-controls, psrs-sweep).
 
-Each task ultimately runs ``python scripts/run_benchmark.py …``,
-which is the official TFB entry point.  The orchestrator never
-re-invents hyper-parameters: it takes them from the vendor script
-and applies only the documented paper-faithful overrides
-(``batch_size = 64``, ``train_drop_last = false``, num-workers = 0
-for /dev/shm-constrained containers, plus seed and save-path).
+For each task:
+  - read the vendor .sh under scripts/multivariate_forecast/...
+  - apply paper overrides (batch_size=64, train_drop_last=false,
+    num-workers=0, plus seed + save-path)
+  - shell out to scripts/run_benchmark.py (the real TFB entry point)
+  - save per-task metadata so reruns are idempotent
+  - halve batch_size on OOM
+  - aggregate everything into a single summary.csv
 
-The file is organised in lettered sections:
+We never invent hyper-params -- the vendor scripts are the source of
+truth. We only override the bits the paper says to override.
 
-    A. Module-level constants and configuration
-    B. ``Task`` dataclass + per-task field helpers
-    C. Vendor script reading (``_read_script_commands``)
-    D. Command-token manipulation utilities
-    E. Task generators per scope
-    F. ``build_tasks`` dispatcher
-    G. Resume-aware metadata persistence
-    H. ``run_tasks`` main loop + parallel runner
-    I. Result aggregation (``collect``)
-    J. CLI entry point (``__main__``)
+Layout:
+  A. Constants & config
+  B. Task dataclass + helpers
+  C. Vendor script reading
+  D. Command-token helpers
+  E. Task generators
+  F. build_tasks dispatcher
+  G. Metadata / resume
+  H. run_tasks + parallel runner
+  I. collect (aggregation)
+  J. CLI
 """
 
 import argparse
@@ -46,12 +44,11 @@ from pathlib import Path
 
 
 # ===========================================================================
-# Section A -- Module-level constants and configuration
+# Section A -- Constants & config
 # ===========================================================================
-# Every value defined here describes WHAT to run (datasets, horizons, seeds,
-# variant lists) or static reference values (paper Table 2 baselines, heavy
-# rows that must run alone on the GPU).  Adding a new scope typically means
-# adding a list here and a generator in Section E.
+# What to run (datasets, horizons, seeds, variants) plus reference values
+# (paper Table 2, heavy rows that need the GPU to themselves).
+# New scope = add a list here + a generator in Section E.
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_ROOT = ROOT / "scripts" / "multivariate_forecast"
@@ -205,14 +202,12 @@ SRSNET_TABLE2 = {
 
 
 # ===========================================================================
-# Section B -- Task dataclass + per-task field helpers
+# Section B -- Task dataclass + helpers
 # ===========================================================================
-# A ``Task`` is a fully-resolved unit of work: the dataset/horizon/model
-# tuple, the literal command line ready for ``subprocess.run``, the output
-# directory under ``result/repro/...``, and the bookkeeping (seed, seq_len,
-# status, note) we need to write into the manifest.  The helpers below
-# extract / match individual fields and decide whether a task is "heavy"
-# (must run alone on the GPU).
+# A Task is one unit of work: dataset/horizon/model, the argv ready for
+# subprocess.run, the save_path, and bookkeeping (seed, status, note).
+# Helpers below read/match fields and flag "heavy" tasks (need the GPU
+# alone).
 
 @dataclass
 class Task:
@@ -233,12 +228,12 @@ class Task:
 
     @property
     def command_hash(self):
-        """Stable 16-char hash of the full command (used to detect changes)."""
+        """16-char hash of the full command."""
         return _command_hash(self.command)
 
 
 def _task_field(task, key):
-    """Read ``key`` from a Task, falling back to the command JSON for ``seq_len``."""
+    """Get a task field, falling back to the command JSON for seq_len."""
     actual = getattr(task, key, None)
     if actual is not None or key != "seq_len" or not task.command:
         return actual
@@ -250,7 +245,7 @@ def _task_field(task, key):
 
 
 def _match_field(task, key, expected):
-    """True if ``task[key]`` equals ``expected`` (or is in it when ``expected`` is a tuple)."""
+    """True if task[key] matches expected (tuples mean any-of)."""
     actual = _task_field(task, key)
     if isinstance(expected, tuple):
         return actual in expected
@@ -258,7 +253,7 @@ def _match_field(task, key, expected):
 
 
 def is_heavy(task):
-    """True iff this task must run with no co-tenants on the GPU."""
+    """True if this task needs the GPU to itself."""
     for rule in HEAVY_ROWS:
         if all(_match_field(task, k, v) for k, v in rule.items()):
             return True
@@ -266,32 +261,30 @@ def is_heavy(task):
 
 
 def _command_hash(command):
-    """16-char sha256 prefix of the canonical JSON-serialised command."""
+    """16-char sha256 of the command (sorted-keys JSON)."""
     payload = json.dumps(command, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
 def _stable_hash(payload):
-    """16-char sha256 prefix of any JSON-serialisable payload."""
+    """16-char sha256 of any JSON-able payload."""
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 
 # ===========================================================================
 # Section C -- Vendor script reading
 # ===========================================================================
-# The official paper ships per-(dataset, model) shell scripts that wrap
-# ``run_benchmark.py`` with the exact hyper-parameters and CLI flags used
-# in the publication.  We never re-derive those values; we parse the
-# scripts to obtain the canonical token list and then apply only the
-# paper-faithful overrides documented in Section A.
+# The paper ships per-(dataset, model) shell scripts that wrap
+# run_benchmark.py with the exact paper hyper-params. We parse those to
+# get the canonical argv, then apply only our documented overrides.
 
 def _script_path(dataset, model):
-    """Path of the official TFB shell script for a given (dataset, model)."""
+    """Where the official TFB .sh lives for (dataset, model)."""
     return SCRIPT_ROOT / f"{dataset}_script" / f"{model}.sh"
 
 
 def _read_script_commands(dataset, model):
-    """Parse the vendor ``.sh`` script and return a list of token-lists per run_benchmark line."""
+    """Parse the vendor .sh, return one token-list per run_benchmark line."""
     path = _script_path(dataset, model)
     if not path.exists():
         return []
@@ -311,16 +304,14 @@ def _read_script_commands(dataset, model):
 
 
 # ===========================================================================
-# Section D -- Command-token manipulation utilities
+# Section D -- Command-token helpers
 # ===========================================================================
-# Once we have the vendor token list, we need a small DSL to read/replace
-# individual ``--flag value`` pairs and the embedded JSON blobs
-# (``--strategy-args``, ``--model-hyper-params``).  Every modification of
-# the official command goes through ``_normalized_command`` so the
-# overrides are explicit and auditable.
+# Tiny helpers to read/replace --flag value pairs and the embedded JSON
+# blobs (--strategy-args, --model-hyper-params). All overrides funnel
+# through _normalized_command so they're explicit and auditable.
 
 def _option(tokens, name, default=None):
-    """Return the value following ``--name`` in a token list (or ``default``)."""
+    """Read the value after --name, or default if missing."""
     if name not in tokens:
         return default
     idx = tokens.index(name)
@@ -330,7 +321,7 @@ def _option(tokens, name, default=None):
 
 
 def _set_option(tokens, name, value):
-    """Return a copy of ``tokens`` with ``--name value`` set (replacing or appending)."""
+    """Copy of tokens with --name set (replace or append)."""
     tokens = list(tokens)
     if name in tokens:
         idx = tokens.index(name)
@@ -341,7 +332,7 @@ def _set_option(tokens, name, value):
 
 
 def _remove_option(tokens, name):
-    """Return a copy of ``tokens`` with every ``--name value`` pair stripped."""
+    """Copy of tokens with every --name pair stripped."""
     tokens = list(tokens)
     while name in tokens:
         idx = tokens.index(name)
@@ -350,13 +341,13 @@ def _remove_option(tokens, name):
 
 
 def _json_option(tokens, name):
-    """Parse the JSON value following ``--name`` (returns ``{}`` if absent)."""
+    """Parse the JSON blob after --name (empty dict if missing)."""
     value = _option(tokens, name)
     return json.loads(value) if value is not None else {}
 
 
 def _identity_payload(task, command):
-    """Stable dict describing the experimental identity of a task (for hashing)."""
+    """Dict that uniquely identifies this experiment (drives the hash)."""
     return {
         "dataset": task.dataset,
         "horizon": task.horizon,
@@ -373,12 +364,12 @@ def _identity_payload(task, command):
 
 
 def _config_hash(task, command):
-    """16-char hash of the identity payload; same value <=> same experiment."""
+    """Hash of the identity payload; same hash = same experiment."""
     return _stable_hash(_identity_payload(task, command))
 
 
 def _model_label(tokens):
-    """Best-effort human label for the model behind a command (uses --save-path or --model-name)."""
+    """Best-effort display name for the model in a command."""
     save_path = _option(tokens, "--save-path", "")
     if "/" in save_path:
         return save_path.split("/")[-1]
@@ -387,7 +378,7 @@ def _model_label(tokens):
 
 
 def _horizon(tokens):
-    """Pull the forecast horizon out of the embedded ``--strategy-args`` JSON."""
+    """Pull the horizon out of the --strategy-args JSON."""
     try:
         return int(_json_option(tokens, "--strategy-args").get("horizon"))
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -395,7 +386,7 @@ def _horizon(tokens):
 
 
 def _paper_hyper_params(tokens, horizon, seq_len=None, paper_mode=True, overrides=None):
-    """Apply paper-faithful overrides (batch_size=64, train_drop_last=false) plus optional extras."""
+    """Apply the paper overrides (batch_size=64, drop_last=false) + extras."""
     params = _json_option(tokens, "--model-hyper-params")
     params["horizon"] = horizon
     if paper_mode:
@@ -409,7 +400,7 @@ def _paper_hyper_params(tokens, horizon, seq_len=None, paper_mode=True, override
 
 
 def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True, hyper_overrides=None):
-    """Apply gpu/seed/save-path/model-name overrides and re-serialise hyper-params JSON."""
+    """Apply all our overrides (gpu, seed, save-path, ...) to the vendor command."""
     horizon = _horizon(tokens)
     if horizon is None:
         raise ValueError("cannot infer horizon")
@@ -443,16 +434,14 @@ def _normalized_command(tokens, *, scope, table, task_id, gpu, seed=None, seq_le
 
 
 # ===========================================================================
-# Section E -- Task generators per scope
+# Section E -- Task generators
 # ===========================================================================
-# Each scope (lite-paper, full-paper, main-compat, selectivity-controls,
-# psrs-sweep) corresponds to a different cross-product of datasets,
-# horizons, models, seeds and seq_lens.  Generators below produce the
-# ``Task`` objects for one slice of that cross-product; the dispatcher
-# in Section F decides which ones to invoke for a requested scope.
+# Each scope = a different cross-product of datasets x horizons x models
+# x seeds x seq_lens. Functions below produce Tasks for one slice;
+# build_tasks (Section F) picks which slices to use.
 
 def _task_from_tokens(tokens, *, scope, table, dataset, model, gpu, seed=None, seq_len=None, model_name=None, adapter="__KEEP__", paper_mode=True, hyper_overrides=None):
-    """Build a single ``Task`` from a parsed vendor command + overrides."""
+    """Build one Task from a parsed vendor command + overrides."""
     horizon = _horizon(tokens)
     suffix = []
     if seed is not None:
@@ -480,7 +469,7 @@ def _task_from_tokens(tokens, *, scope, table, dataset, model, gpu, seed=None, s
 
 
 def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq_lens=(None,), model_name=None, adapter=None, hyper_overrides=None):
-    """Expand the official ``.sh`` script for (dataset, model) into one Task per (horizon, seed, seq_len)."""
+    """Expand the official .sh into one Task per (horizon, seed, seq_len)."""
     tasks = []
     entries = _read_script_commands(dataset, model)
     display_model = model_name.split(".")[-1] if model_name else model
@@ -549,16 +538,10 @@ def _official_tasks_for(dataset, model, *, scope, table, gpu, seeds=(2021,), seq
 
 
 def _selectivity_controls_tasks(scope, gpu, grid):
-    """Selectivity-controls retrained study (Experiment 2 in the plan).
+    """Selectivity-controls study: baseline + random controls + extensions (1/2/3-axis combos).
 
-    Generates 5-seed retrained runs for each of three variants:
-
-        * SRSNet (baseline, learned select + learned shuffle)
-        * srs_paper.SRSNet_RandomSP (random select, learned shuffle)
-        * srs_paper.SRSNet_RandomSPNoShuffle (random select, identity shuffle)
-
-    ``grid`` is either ``"small"`` (default: 2 datasets x 2 horizons x 5 seeds)
-    or ``"full"`` (4 datasets x 4 horizons x 5 seeds).
+    grid="small" => 2 datasets x 2 horizons x 5 seeds (default).
+    grid="full"  => 4 datasets x 4 horizons x 5 seeds.
     """
     if grid not in ("small", "full"):
         raise ValueError(f"selectivity grid must be 'small' or 'full', got {grid!r}")
@@ -599,18 +582,10 @@ PSRS_SWEEP_VARIANTS = [
 
 
 def _psrs_sweep_tasks(scope, gpu):
-    """PS-SRS lambda sweep with z-scored auxiliary targets.
+    """PS-SRS lambda sweep: for each (variant, lambda) run the small grid (20 tasks each).
 
-    For each variant in PSRS_SWEEP_VARIANTS and each lambda in
-    PSRS_SWEEP_LAMBDAS, generates the small selectivity-controls grid
-    (2 datasets x 2 horizons x 5 seeds = 20 tasks per (variant,
-    lambda) cell).  Lambda is injected into the model hyperparameters
-    via ``hyper_overrides``; lambda=0 is the clean control (same
-    architecture, no auxiliary signal).
-
-    Total: len(PSRS_SWEEP_VARIANTS) * len(PSRS_SWEEP_LAMBDAS) * 20
-    = 160 tasks at the default sweep grid (2 variants x 4 lambdas x
-    20 cells).
+    lambda=0 is the clean control (architecture unchanged, no aux loss).
+    Default total: 2 variants x 4 lambdas x 20 cells = 160 tasks.
     """
     tasks = []
     for model_name, prefix in PSRS_SWEEP_VARIANTS:
@@ -635,14 +610,13 @@ def _psrs_sweep_tasks(scope, gpu):
 
 
 # ===========================================================================
-# Section F -- ``build_tasks`` dispatcher
+# Section F -- build_tasks dispatcher
 # ===========================================================================
-# Single entry point that, given a scope name, returns the full ordered
-# list of ``Task`` objects we expect to run.  Adding a new scope means
-# adding a branch here and a generator in Section E.
+# Given a scope, returns the full ordered list of Tasks to run. New
+# scope = add a branch here + a generator in Section E.
 
 def build_tasks(scope, gpu):
-    """Dispatch to the right scope-specific generator and return the full task list."""
+    """Pick the scope generator and return the full task list."""
     tasks = []
     if scope == "main-compat":
         for dataset in PAPER_DATASETS:
@@ -750,7 +724,7 @@ def build_tasks(scope, gpu):
 
 
 def _efficiency_reference_tasks(scope, gpu):
-    """Generate Table 5/6 efficiency profiler tasks (one-batch wall-clock) or 'omitted-lite' stubs."""
+    """Table 5/6 efficiency tasks (or 'omitted-lite' stubs outside full-paper)."""
     rows = []
     table5_models = ["SRSNet", "PatchTST", "Crossformer", "DLinear", "TimesNet", "FEDformer"]
     table6_models = ["PatchTST", "SRSPlusPatchTST", "Crossformer", "SRSPlusCrossformer"]
@@ -783,42 +757,40 @@ def _efficiency_reference_tasks(scope, gpu):
 
 
 # ===========================================================================
-# Section G -- Resume-aware metadata persistence
+# Section G -- Metadata / resume
 # ===========================================================================
-# Three artefacts per scope under ``repro_results/<scope>/``:
+# Three files per scope under repro_results/<scope>/:
+#   - manifest.jsonl   one row per planned task + config_hash
+#   - status.jsonl     append-only log of every attempt
+#   - metadata/*.json  last attempt per task (drives resume)
 #
-#   * manifest.jsonl   - the plan (one JSON row per task with config_hash)
-#   * status.jsonl     - append-only log of every completed/failed attempt
-#   * metadata/*.json  - last-attempt detail per task, used by resume
-#
-# Resume logic: a task is skipped iff a stored metadata JSON has
-# ``status == "completed"`` AND the recorded ``requested_config_hash``
-# matches what the current manifest would produce.  Any drift (paper-mode
-# flag flipped, lambda changed, ...) re-runs the task automatically.
+# We skip a task iff its stored metadata says "completed" AND the
+# stored config_hash matches what we'd build today. Change anything
+# (lambda, paper-mode, ...) and the hash flips so we rerun automatically.
 
 def _status_path(scope):
-    """Return the path of the append-only status log for a scope."""
+    """Path to status.jsonl for this scope."""
     path = REPRO_ROOT / scope
     path.mkdir(parents=True, exist_ok=True)
     return path / "status.jsonl"
 
 
 def _manifest_path(scope):
-    """Return the path of the planned-tasks manifest for a scope."""
+    """Path to manifest.jsonl for this scope."""
     path = REPRO_ROOT / scope
     path.mkdir(parents=True, exist_ok=True)
     return path / "manifest.jsonl"
 
 
 def _metadata_path(scope, task_id):
-    """Return the per-task JSON file path (one per task in ``<scope>/metadata/``)."""
+    """Path to <scope>/metadata/<task_id>.json."""
     path = REPRO_ROOT / scope / "metadata"
     path.mkdir(parents=True, exist_ok=True)
     return path / f"{task_id}.json"
 
 
 def _load_metadata(scope, task_id):
-    """Load the per-task metadata JSON (returns ``{}`` if missing)."""
+    """Load per-task metadata (empty dict if missing)."""
     path = _metadata_path(scope, task_id)
     if not path.exists():
         return {}
@@ -826,12 +798,12 @@ def _load_metadata(scope, task_id):
 
 
 def _write_metadata(scope, task_id, metadata):
-    """Persist per-task metadata (atomic via single write_text call)."""
+    """Write per-task metadata JSON."""
     _metadata_path(scope, task_id).write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
 
 def _load_status(scope):
-    """Load status.jsonl into a {task_id -> latest record} dict."""
+    """Load status.jsonl as {task_id: latest record}."""
     path = _status_path(scope)
     statuses = {}
     if not path.exists():
@@ -845,7 +817,7 @@ def _load_status(scope):
 
 
 def write_manifest(scope, tasks):
-    """(Re-)write the manifest.jsonl listing every planned task with its config_hash."""
+    """Rewrite manifest.jsonl with every planned task + its config_hash."""
     with _manifest_path(scope).open("w") as fh:
         for task in tasks:
             item = asdict(task)
@@ -856,44 +828,44 @@ def write_manifest(scope, tasks):
 
 
 def _append_status(scope, item):
-    """Append one JSON record to the scope's status.jsonl log."""
+    """Append one row to status.jsonl."""
     with _status_path(scope).open("a") as fh:
         fh.write(json.dumps(item, sort_keys=True) + "\n")
 
 
 def _latest_report(save_path):
-    """Return the most recently modified ``test_report*.csv`` under a save_path (or '')."""
+    """Most recent test_report*.csv under save_path (or '')."""
     directory = RESULT_ROOT / save_path
     files = sorted(directory.glob("test_report*.csv"), key=lambda p: p.stat().st_mtime)
     return str(files[-1]) if files else ""
 
 
 def _explicit_output(command):
-    """Return the value of the command's ``--out`` flag (used by the efficiency profiler)."""
+    """Value of the --out flag (efficiency profiler only)."""
     return _option(command, "--out", "")
 
 
 def _oom_text(text):
-    """Heuristic: True if a subprocess log indicates a CUDA out-of-memory error."""
+    """True if this log looks like a CUDA OOM."""
     lowered = text.lower()
     return "out of memory" in lowered or "cuda error: out of memory" in lowered
 
 
 def _with_batch_size(command, batch_size):
-    """Return a copy of ``command`` with ``model-hyper-params.batch_size`` overridden."""
+    """Copy of command with a new batch_size."""
     params = _json_option(command, "--model-hyper-params")
     params["batch_size"] = batch_size
     return _set_option(command, "--model-hyper-params", json.dumps(params, sort_keys=True))
 
 
 def _batch_size(command):
-    """Read the current batch_size from a command (defaults to 64)."""
+    """Current batch_size from the command (default 64)."""
     params = _json_option(command, "--model-hyper-params")
     return int(params.get("batch_size", 64))
 
 
 def _completed_metadata_matches(scope, task, previous):
-    """True iff a stored 'completed' metadata file matches the task's current config_hash."""
+    """True if stored metadata says 'completed' and the config_hash still matches."""
     if not previous or previous.get("status") != "completed":
         return False
     metadata = _load_metadata(scope, task.task_id)
@@ -905,7 +877,7 @@ def _completed_metadata_matches(scope, task, previous):
 
 
 def _stale_result_files(scope):
-    """List legacy result files outside ``result/repro/<scope>/`` that the runner does not use."""
+    """Legacy result files outside result/repro/<scope>/ (the runner ignores them)."""
     keep_root = (RESULT_ROOT / "repro" / scope).resolve()
     stale = []
     for directory in (ROOT / "results", RESULT_ROOT):
@@ -925,7 +897,7 @@ def _stale_result_files(scope):
 
 
 def check_stale_results(scope):
-    """CLI helper: print stale result files and exit non-zero if any are found."""
+    """Print stale result files and exit non-zero if any exist."""
     stale = _stale_result_files(scope)
     if not stale:
         print("No stale legacy result files found.")
@@ -939,24 +911,22 @@ def check_stale_results(scope):
 
 
 def _log_path(scope, task_id):
-    """Return the per-task subprocess log path (``<scope>/logs/<task_id>.log``)."""
+    """Per-task subprocess log path."""
     log_dir = REPRO_ROOT / scope / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"{task_id}.log"
 
 
 def _apply_parallel_mods(command, effective_concurrency):
-    """Return the exact experiment command for a parallel slot.
+    """Return the command unchanged -- parallelism must not alter experiment identity.
 
-    Parallelism must not silently alter training/evaluation configuration.
-    In particular, --deterministic is part of the experiment identity, so it is
-    preserved exactly as it appears in the official/paper-normalized command.
+    --deterministic stays as-is since it's part of the config_hash.
     """
     return list(command)
 
 
 def _write_failed_status(scope, task, command, attempts, started, log_file):
-    """Append a 'failed' record to status.jsonl with the final command and log path."""
+    """Append a 'failed' row to status.jsonl."""
     _append_status(
         scope,
         {
@@ -975,7 +945,7 @@ def _write_failed_status(scope, task, command, attempts, started, log_file):
 
 
 def _write_completed(scope, task, command, attempts, started, effective_concurrency, parallel_requested):
-    """Persist per-task metadata and append a 'completed' record to status.jsonl."""
+    """Save per-task metadata and append a 'completed' row to status.jsonl."""
     result_file = _latest_report(task.save_path) or _explicit_output(command)
     metadata = {
         **asdict(task),
@@ -1029,17 +999,15 @@ def _shutdown_children(slots, grace=5.0):
 
 
 # ===========================================================================
-# Section H -- ``run_tasks`` main loop + parallel runner
+# Section H -- run_tasks + parallel runner
 # ===========================================================================
-# Sequential path (parallel=1): one subprocess at a time, with OOM
-# retries by halving batch_size down to PAPER_BATCH_FLOOR.  Parallel
-# path (parallel>=2, ``_run_parallel``): Popen-pool scheduler that
-# admits up to ``parallel`` children at once, enforces "heavy rows run
-# alone", and disables OOM batch-halving so failures are loud and
-# repeatable.
+# parallel=1: one subprocess at a time, halves batch_size on OOM down
+# to PAPER_BATCH_FLOOR.
+# parallel>=2 (_run_parallel): Popen-pool, up to N children, heavy rows
+# still run alone. No OOM retry here -- failures stay loud.
 
 def run_tasks(scope, tasks, *, resume=True, keep_going=False, dry_run=False, max_tasks=None, parallel=1):
-    """Sequential runner (parallel=1) with OOM batch-halving; delegates to ``_run_parallel`` otherwise."""
+    """Sequential runner with OOM batch-halving; hands off to _run_parallel if parallel>=2."""
     if parallel < 1:
         raise ValueError(f"--parallel must be >= 1 (got {parallel})")
     if parallel >= 2 and not dry_run:
@@ -1248,17 +1216,15 @@ def _run_parallel(scope, tasks, *, resume, keep_going, max_tasks, parallel):
 
 
 # ===========================================================================
-# Section I -- Result aggregation (``collect``)
+# Section I -- collect (aggregation)
 # ===========================================================================
-# Walks the manifest + status.jsonl, reads each task's
-# ``test_report*.csv`` (and, for efficiency rows, the explicit JSON
-# output), joins per-row metrics with the paper Table 2 reference, and
-# writes a flat ``summary.csv`` plus a Markdown coverage report
-# (``coverage.md``).  Everything downstream (tools/, report_tables/,
-# generate_paper_comparison.py) reads from these two files.
+# Walks manifest + status.jsonl, reads each task's test_report*.csv
+# (or JSON for efficiency rows), joins against paper Table 2, and
+# writes summary.csv + coverage.md. Everything downstream reads from
+# these two files.
 
 def _read_metric_row(result_file):
-    """Read the first CSV row from a TFB ``test_report*.csv`` (returns ``{}`` if absent)."""
+    """First row of a test_report*.csv (empty dict if missing)."""
     if not result_file:
         return {}
     path = Path(result_file)
@@ -1270,7 +1236,7 @@ def _read_metric_row(result_file):
 
 
 def _read_json_result(result_file):
-    """Read the explicit JSON output (used by efficiency profilers); returns ``{}`` otherwise."""
+    """Parse a JSON result file (efficiency rows). Empty dict otherwise."""
     if not result_file:
         return {}
     path = Path(result_file)
@@ -1280,7 +1246,7 @@ def _read_json_result(result_file):
 
 
 def _load_manifest(scope):
-    """Load manifest.jsonl into a {task_id -> manifest row} dict."""
+    """Load manifest.jsonl as {task_id: row}."""
     path = _manifest_path(scope)
     items = {}
     if not path.exists():
@@ -1294,7 +1260,7 @@ def _load_manifest(scope):
 
 
 def collect(scope):
-    """Aggregate per-task results into ``<scope>/summary.csv`` and ``<scope>/coverage.md``."""
+    """Roll up all task results into summary.csv + coverage.md."""
     manifest = _load_manifest(scope)
     statuses = _load_status(scope)
     out_dir = REPRO_ROOT / scope
@@ -1372,19 +1338,18 @@ def collect(scope):
 
 
 # ===========================================================================
-# Section J -- CLI entry point (``__main__``)
+# Section J -- CLI
 # ===========================================================================
-# Sub-commands exposed to the shell:
-#
-#   * check-data            - verify dataset CSVs exist under dataset/forecasting/
-#   * check-stale-results   - print legacy result files outside repro/<scope>/
-#   * manifest / dry-coverage - write the planned manifest, do not run
-#   * run                   - execute the plan (resume-aware)
-#   * collect               - aggregate results into summary.csv + coverage.md
-#   * smoke-check           - quick sanity check vs paper Table 2
+# Sub-commands:
+#   check-data              dataset CSVs are in place?
+#   check-stale-results     anything outside repro/<scope>/?
+#   manifest / dry-coverage write the plan, don't run
+#   run                     execute the plan (resume-aware)
+#   collect                 build summary.csv + coverage.md
+#   smoke-check             quick check vs paper Table 2
 
 def check_data():
-    """Verify the official forecasting CSVs are present; exit non-zero if any are missing."""
+    """Check that the dataset CSVs exist; exit non-zero if any are missing."""
     missing = []
     meta = DATASET_ROOT / "FORECAST_META.csv"
     if not meta.exists():
@@ -1402,7 +1367,7 @@ def check_data():
 
 
 def smoke_check(scope, dataset, horizon, tolerance_mse, tolerance_mae):
-    """Compare the best completed SRSNet (dataset, horizon) row against paper Table 2 within tolerance."""
+    """Compare best SRSNet (dataset, horizon) against paper Table 2 within tolerance."""
     summary_path = REPRO_ROOT / scope / "summary.csv"
     if not summary_path.exists():
         collect(scope)
@@ -1435,6 +1400,7 @@ def smoke_check(scope, dataset, horizon, tolerance_mse, tolerance_mae):
 
 
 def main():
+    """Parse CLI args and dispatch to the chosen sub-command."""
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["manifest", "run", "collect", "dry-coverage", "check-data", "check-stale-results", "smoke-check"])
     parser.add_argument(
