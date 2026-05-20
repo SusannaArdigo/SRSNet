@@ -51,15 +51,17 @@ replaces the learned patch scorer with random selection, with
 engineered-feature selection (TASP), with a context-dependent hypernet
 fusion (Hypernet-AF), and with an auxiliary pattern-supervision head
 (PS-SRS), as well as the three corresponding factorial combinations.
-A paired $t$-test over $20$ seed cells per variant yields $p$-values
-in $[0.43, 0.95]$ with $95\%$ CIs that all include zero and Cohen's $d
-< 0.2$ throughout, so \textbf{at our sample size the experiments are
-not powered to demonstrate any variant is superior or inferior to the
-baseline}. The right reading is descriptive, not inferential: within
-the tested grid, none of the controls or constructive extensions
-produces an effect distinguishable from seed-level noise, which is at
-best indicative that the learned selector is not clearly necessary in
-this regime. The full code and tables are released at
+Across all $11$ variants the absolute mean $\Delta$MSE is
+$\le 0.27\%$ while the seed-level standard deviation is
+$\ge 0.97\%$, so \textbf{at our sample size the differences are
+within the across-seed noise band and we do not claim statistical
+significance}. The right reading is descriptive, not inferential:
+within the tested grid, none of the controls or constructive
+extensions produces an effect comparable to or larger than the
+seed-level noise, which is at best indicative that the learned
+selector is not clearly necessary in this regime. A stronger
+inferential analysis (more seeds, pre-registered test, multiple-
+testing correction) is a clear follow-up direction. The full code and tables are released at
 \url{https://github.com/SusannaArdigo/SRSNet}.
 \end{abstract}
 
@@ -379,15 +381,12 @@ randomised.
 
 Across the $20$ resulting cells per variant the mean $\Delta$MSE is
 $-0.22\%$ (RandomSP) and $-0.12\%$ (RandomSPNoShuffle); the
-seed-level standard deviation is $1.23\%$ and $1.46\%$.  Both
-$95\%$ CIs include zero ($[-0.79, +0.35]$ and $[-0.80, +0.57]$),
-and Cohen's $d$ is $0.18$ and $0.08$ -- in the "negligible" range
-of the conventional rule of thumb. \textbf{Both effects are
-indistinguishable from the seed-level noise band at our sample
-size}. The right reading is descriptive: random patch selection is
-empirically inseparable from the learned scorer on the tested grid
-and beats it on $12/20$ seeds, which we report as a per-cell win
-count rather than as an inferential claim.  The strongest single
+seed-level standard deviation is $1.23\%$ and $1.46\%$ -- larger in
+magnitude than the means.  Generally speaking, the difference
+between random and learned patch selection is within the noise band
+of the experiment at our sample size.  Random selection beats the
+learned scorer on $12/20$ seeds, which we report as a descriptive
+win count rather than as an inferential claim; the strongest single
 cell is ETTh1 / H=720, where RandomSPNoShuffle is better than
 SRSNet on $5/5$ seeds with mean $\Delta = -1.07\%$.
 
@@ -508,26 +507,24 @@ $\Delta$MSE versus SRSNet, and Table~\ref{tab:variant-stats} reports
 the paired-delta summary statistics for all $11$ variants (four
 1-axis changes including RandomSPNoShuffle, three 2-axis combos,
 and three new 3-axis combos that stack identity shuffle on top of
-the (Select, Hypernet-AF) combos).  Every $95\%$ CI on the mean
-$\Delta$MSE includes zero, and the absolute Cohen's $d$ never
-exceeds $0.24$ -- well below the rule-of-thumb threshold of $0.5$
-for a "medium" effect.  \textbf{No variant produces an effect
-distinguishable from the seed-level noise band at our sample
-size.}  A power calculation under the observed seed std
-$\sigma \approx 1.4\%$ indicates that detecting a $0.2\%$ mean
-$\Delta$MSE with $80\%$ power at $\alpha = 0.05$ would require
-$265$ to $650$ paired cells per variant; we have $20$.  Any reading
-beyond "effects are within the seed-level noise band" is therefore
-not supported by the data.
+the (Select, Hypernet-AF) combos).
 
-We chose not to report individual $p$-values per variant.  With $11$
-variants compared against the same baseline, the family-wise error
-rate would explode unless we pre-registered a correction (e.g.\
-Holm-Bonferroni); and with the observed sample size none of the
-contrasts would clear even an uncorrected $\alpha = 0.05$ anyway.
-Mean, std, $95\%$ CI, and Cohen's $d$ already convey the relevant
-information -- "the effect is small, the interval covers zero, the
-Cohen's $d$ is in the negligible range".
+Generally speaking, in every variant the absolute mean $\Delta$MSE
+($\le 0.27\%$) is comparable to or smaller than the seed-level
+standard deviation ($\ge 0.97\%$), so the observed differences are
+within the across-seed noise band of the experiment.  The
+seed-level win counts are also close to a $10/20$ split for every
+variant ($8$ to $13$), which we report descriptively rather than
+inferentially.  We deliberately do not perform a formal hypothesis
+test: with $20$ paired cells per variant and $11$ correlated
+contrasts against the same baseline, a proper analysis would
+require a pre-registered test, a multiple-testing correction, and
+more seeds than we ran.  Treating Table~\ref{tab:variant-stats} as
+a descriptive summary -- "the means are small, the seed std is
+larger, the wins are close to chance" -- is the most we can claim
+honestly given the data we have.  A stronger analysis (more seeds,
+pre-registered hypothesis test, multiple-comparison correction)
+remains a clear follow-up direction.
 
 The PSRS and PSRS\_HypernetAF rows in
 Table~\ref{tab:variant-stats} use the patched (v2) auxiliary loss
@@ -545,42 +542,39 @@ training the head to predict the wrong thing.
 
 \begin{table}[t]
   \caption{Each variant against the SRSNet baseline across $20$
-    (dataset, horizon, seed) cells.  The 11 variants cover four
-    1-axis changes, three 2-axis (Select $\times$ Fusion) combos,
-    and three new 3-axis combos (Select $\times$ Identity-Shuffle
-    $\times$ Hypernet-AF).  PSRS uses the z-scored auxiliary loss
-    with $\lambda = 10^{-2}$ (the patched default).
-    \textbf{Every $95\%$ CI on $\Delta$MSE includes zero and the
-    absolute Cohen's $d$ never exceeds $0.24$}, so all variants are
-    inside the seed-level noise band.  We report CI and Cohen's $d$
-    rather than $p$-values because $n=20$ is below the
-    minimum-detectable-effect threshold for any plausible alpha (see
-    text), and because reporting $p$-values across $11$ correlated
-    contrasts without a pre-registered correction would be
-    misleading.}
+    (dataset, horizon, seed) paired cells.  The 11 variants cover
+    four 1-axis changes, three 2-axis (Select $\times$ Fusion)
+    combos, and three new 3-axis combos (Select $\times$
+    Identity-Shuffle $\times$ Hypernet-AF).  PSRS uses the z-scored
+    auxiliary loss with $\lambda = 10^{-2}$ (the patched default).
+    We report only descriptive numbers (mean $\pm$ std and the
+    seed-level win count); a proper inferential analysis would
+    require a pre-registered test, more seeds, and a multiple-
+    testing correction across the $11$ variants, none of which we
+    have here.}
   \label{tab:variant-stats}
   \begin{center}
   \small
-  \begin{tabular}{lccc}
+  \begin{tabular}{lcc}
     \toprule
-    Variant & mean $\Delta$\% (std) & $95\%$ CI & Cohen's $d$ \\
+    Variant & mean $\Delta$\% (std \%) & wins / 20 \\
     \midrule
-    \multicolumn{4}{l}{\emph{1-axis changes}} \\
-    SRSNet\_RandomSP                          & $-0.22$ ($1.23$) & $[-0.79, +0.35]$ & $-0.18$ \\
-    SRSNet\_RandomSPNoShuffle                 & $-0.12$ ($1.46$) & $[-0.80, +0.57]$ & $-0.08$ \\
-    SRSNet\_HypernetAF                        & $-0.09$ ($1.44$) & $[-0.76, +0.58]$ & $-0.06$ \\
-    \textbf{SRSNet\_PSRS} (z-scored)          & $\mathbf{-0.27}$ ($1.14$) & $[-0.81, +0.26]$ & $-0.24$ \\
-    SRSNet\_TASP                              & $+0.25$ ($1.82$) & $[-0.60, +1.10]$ & $+0.14$ \\
+    \multicolumn{3}{l}{\emph{1-axis changes}} \\
+    SRSNet\_RandomSP                          & $-0.22$ ($1.23$) & $12$ \\
+    SRSNet\_RandomSPNoShuffle                 & $-0.12$ ($1.46$) & $12$ \\
+    SRSNet\_HypernetAF                        & $-0.09$ ($1.44$) & $11$ \\
+    \textbf{SRSNet\_PSRS} (z-scored)          & $\mathbf{-0.27}$ ($1.14$) & $\mathbf{13}$ \\
+    SRSNet\_TASP                              & $+0.25$ ($1.82$) & $12$ \\
     \midrule
-    \multicolumn{4}{l}{\emph{2-axis combos (Select $\times$ Fusion)}} \\
-    SRSNet\_RandomSP\_HypernetAF              & $-0.20$ ($1.65$) & $[-0.98, +0.57]$ & $-0.12$ \\
-    SRSNet\_TASP\_HypernetAF                  & $-0.02$ ($1.23$) & $[-0.60, +0.56]$ & $-0.02$ \\
-    SRSNet\_PSRS\_HypernetAF (z-scored)       & $+0.16$ ($1.05$) & $[-0.33, +0.65]$ & $+0.15$ \\
+    \multicolumn{3}{l}{\emph{2-axis combos (Select $\times$ Fusion)}} \\
+    SRSNet\_RandomSP\_HypernetAF              & $-0.20$ ($1.65$) & $12$ \\
+    SRSNet\_TASP\_HypernetAF                  & $-0.02$ ($1.23$) & $8$  \\
+    SRSNet\_PSRS\_HypernetAF (z-scored)       & $+0.16$ ($1.05$) & $12$ \\
     \midrule
-    \multicolumn{4}{l}{\emph{3-axis combos (Select $\times$ Identity-Shuffle $\times$ Hypernet-AF)}} \\
-    SRSNet\_RandomSP\_NoShuffle\_HypernetAF   & $-0.24$ ($1.53$) & $[-0.96, +0.47]$ & $-0.16$ \\
-    SRSNet\_PSRS\_NoShuffle\_HypernetAF       & $+0.05$ ($1.22$) & $[-0.52, +0.63]$ & $+0.04$ \\
-    SRSNet\_TASP\_NoShuffle\_HypernetAF       & $+0.07$ ($0.97$) & $[-0.38, +0.53]$ & $+0.08$ \\
+    \multicolumn{3}{l}{\emph{3-axis combos (Select $\times$ Identity-Shuffle $\times$ Hypernet-AF)}} \\
+    SRSNet\_RandomSP\_NoShuffle\_HypernetAF   & $-0.24$ ($1.53$) & $11$ \\
+    SRSNet\_PSRS\_NoShuffle\_HypernetAF       & $+0.05$ ($1.22$) & $11$ \\
+    SRSNet\_TASP\_NoShuffle\_HypernetAF       & $+0.07$ ($0.97$) & $11$ \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -652,14 +646,17 @@ $4/4$ cells, while remaining mixed elsewhere).
 
 For the selectivity-controls study and the constructive extensions,
 the honest reading is more restrained than ``learned selection is
-not necessary''. None of the variants we tested rejects the null
-hypothesis of zero mean $\Delta$MSE at the standard $\alpha = 0.05$
-level (Table~\ref{tab:variant-stats}). Read \emph{descriptively},
-random patch selection matches or beats the learned scorer on
-$12/20$ seeds and the factorial decomposition shows no detectable
-main effect on either factor; read \emph{inferentially}, our sample
-size is too small to support any positive or negative claim about
-selectivity, fusion, or pattern supervision in this regime.
+not necessary''.  Generally speaking, the absolute mean $\Delta$MSE
+of every variant in Table~\ref{tab:variant-stats} is comparable to
+or smaller than the seed-level standard deviation, so the observed
+effects are within the across-seed noise band.  Read
+descriptively, random patch selection matches or beats the learned
+scorer on $12/20$ seeds and the factorial decomposition shows no
+detectable main effect on either factor; we do not make an
+inferential claim because our sample size ($n = 20$ paired cells
+per variant, no pre-registered test, no multiple-comparison
+correction) is not enough to support one.  A statistically rigorous
+follow-up would expand the grid and pre-register a hypothesis test.
 
 \subsection{What our experiments do and do not show}
 
@@ -712,29 +709,28 @@ baseline. Results are in Table~\ref{tab:psrs-sweep}.
 
 \begin{table}[ht]
   \caption{PS-SRS $\lambda$ sweep with z-scored auxiliary targets.
-    Each row is $n=20$ cells. The mean $\Delta$\% is the paired
-    delta vs the SRSNet baseline on the same
-    (dataset, horizon, seed) cells.  Every $95\%$ CI includes zero;
-    the one striking row is PS-SRS standalone at
-    $\lambda = 10^{-1}$ whose CI grazes zero on the negative side
-    while the mean is $+0.64\%$ -- a borderline \emph{degradation}
-    that confirms the main-loss conflict diagnosed in the audit.}
+    Each row is $n=20$ paired cells.  The most striking row is
+    PS-SRS standalone at $\lambda = 10^{-1}$, where the mean is a
+    $+0.64\%$ \emph{degradation} -- the largest absolute mean in the
+    table and pointing the wrong way, which is the descriptive
+    counterpart of the main-loss conflict diagnosed in the audit.
+    All other absolute means are smaller than their seed-level std.}
   \label{tab:psrs-sweep}
   \begin{center}
   \small
-  \begin{tabular}{llrccr}
+  \begin{tabular}{llrcc}
     \toprule
-    Variant & $\lambda$ & mean $\Delta$\% & std \% & $95\%$ CI & wins/20 \\
+    Variant & $\lambda$ & mean $\Delta$\% & std \% & wins/20 \\
     \midrule
-    PS-SRS                          & $0$       & $+0.158$ & $1.11$ & $[-0.36, +0.68]$ & $10$ \\
-    PS-SRS                          & $10^{-3}$ & $+0.432$ & $1.24$ & $[-0.15, +1.01]$ & $9$  \\
-    \textbf{PS-SRS}                 & $\mathbf{10^{-2}}$ & $\mathbf{-0.274}$ & $1.14$ & $[-0.81, +0.26]$ & $\mathbf{13}$ \\
-    PS-SRS                          & $10^{-1}$ & $+0.644$ & $1.40$ & $[-0.01, +1.30]$ & $8$  \\
+    PS-SRS                          & $0$       & $+0.158$ & $1.11$ & $10$ \\
+    PS-SRS                          & $10^{-3}$ & $+0.432$ & $1.24$ & $9$  \\
+    \textbf{PS-SRS}                 & $\mathbf{10^{-2}}$ & $\mathbf{-0.274}$ & $1.14$ & $\mathbf{13}$ \\
+    PS-SRS                          & $10^{-1}$ & $+0.644$ & $1.40$ & $8$  \\
     \midrule
-    \textbf{PSRS\_HypernetAF}        & $\mathbf{0}$       & $\mathbf{-0.144}$ & $0.94$ & $[-0.59, +0.30]$ & $\mathbf{12}$ \\
-    PSRS\_HypernetAF                 & $10^{-3}$ & $-0.089$ & $0.98$ & $[-0.55, +0.37]$ & $11$ \\
-    PSRS\_HypernetAF                 & $10^{-2}$ & $+0.162$ & $1.05$ & $[-0.33, +0.65]$ & $12$ \\
-    PSRS\_HypernetAF                 & $10^{-1}$ & $-0.089$ & $1.01$ & $[-0.56, +0.38]$ & $11$ \\
+    \textbf{PSRS\_HypernetAF}        & $\mathbf{0}$       & $\mathbf{-0.144}$ & $0.94$ & $\mathbf{12}$ \\
+    PSRS\_HypernetAF                 & $10^{-3}$ & $-0.089$ & $0.98$ & $11$ \\
+    PSRS\_HypernetAF                 & $10^{-2}$ & $+0.162$ & $1.05$ & $12$ \\
+    PSRS\_HypernetAF                 & $10^{-1}$ & $-0.089$ & $1.01$ & $11$ \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -751,13 +747,12 @@ This confirms that the v1 negative result was at least partly a
 consequence of the FFT-dominated descriptor MSE, not a structural
 property of the auxiliary supervision idea.
 
-Second, no $\lambda$ value yields a CI that excludes zero for
-either variant.  The most striking row is $\lambda = 10^{-1}$ for
-PS-SRS standalone: the CI is $[-0.01, +1.30]$, just grazing zero
-on the negative side, and the mean is a \emph{degradation} of
-$+0.64\%$ -- the largest absolute mean across the sweep, and it
-points the wrong way.  That borderline shift is the quantitative
-version of the gradient-conflict diagnosis from the
+Second, every $\lambda$ value yields an absolute mean smaller
+than or comparable to its seed-level std.  The most striking row
+is $\lambda = 10^{-1}$ for PS-SRS standalone: the mean is a
+$+0.64\%$ \emph{degradation} -- the largest absolute mean across
+the sweep, and it points the wrong way.  That descriptive shift is
+consistent with the gradient-conflict diagnosis from the
 audit: with $\lambda$ large enough to dominate, the auxiliary
 loss pulls the scorer hidden activation away from the direction
 useful for forecasting.
@@ -847,33 +842,32 @@ elsewhere). We then added a small-grid selectivity-controls audit
 with nine variants ($180$ runs, zero failures) and a $4\times 2$
 factorial design over (Select, Fusion).
 
-\textbf{Read inferentially}, the small-grid audit is inconclusive:
-no variant rejects the null at $\alpha = 0.05$, all confidence
-intervals include zero, all effect sizes are small.
-\textbf{Read descriptively}, the audit is consistent with a
+Read descriptively, the small-grid audit is consistent with a
 hypothesis worth probing at larger scale --- that on ETT, the
 learned selector and the free-parameter fusion are not the
-mechanisms responsible for SRSNet's performance --- but it cannot
-establish that hypothesis at our sample size. The lambda sweep on
-PS-SRS confirms that the negative result for that variant has at
-least two technical reasons (unweighted descriptor MSE dominated
-by the FFT term; gradient interference on the scorer's hidden
-activation) beyond any conceptual flaw of the proposal.
+mechanisms responsible for SRSNet's performance --- but at $n=20$
+paired cells per variant we make no claim of statistical
+significance.  Generally speaking, every absolute mean
+$\Delta$MSE we observed is within the seed-level standard
+deviation of the experiment.  The lambda sweep on PS-SRS shows
+that the negative result for that variant has at least two
+technical reasons (unweighted descriptor MSE dominated by the FFT
+term; gradient interference on the scorer's hidden activation)
+beyond any conceptual flaw of the proposal.
 
 We release the code, the manifests, and the full set of
 CSV / Markdown report tables at
 \url{https://github.com/SusannaArdigo/SRSNet}.
 
-The natural follow-up is to extend the selectivity-controls study
-to the full $4$-dataset $\times 4$-horizon grid and to the
+The natural follow-up is to (i) extend the selectivity-controls
+study to the full $4$-dataset $\times 4$-horizon grid and to the
 remaining benchmarks of the paper (Weather, Electricity, Solar,
-Traffic), and to add a statistical-significance framework
-(paired Wilcoxon + bootstrap CI + effect size) so each claim of
-the form ``X improves Y by Z\%'' is accompanied by a $p$-value and
-a confidence interval. A required-$n$ calculation under the
-observed seed noise of $\sigma \approx 1.4\%$ suggests $n \in
-[270, 550]$ cells per variant to detect a $0.2\%$ effect at
-$80\%$ power, against the $20$ cells per variant we ran.
+Traffic) so that the per-variant sample grows substantially, and
+(ii) add a proper statistical-significance framework (pre-registered
+hypothesis, multiple-comparison correction, paired non-parametric
+test, bootstrap interval) so that each claim of the form ``X
+improves Y by Z\%'' is anchored to an inferential analysis rather
+than only to the descriptive numbers we report here.
 
 \section*{Member contributions}
 
