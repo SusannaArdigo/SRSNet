@@ -8,13 +8,16 @@ from ts_benchmark.baselines.srs_paper.extensions import (
     SRSNet_HypernetAF,
     SRSNet_PSRS,
     SRSNet_PSRS_HypernetAF,
+    SRSNet_PSRS_NoShuffle_HypernetAF,
     SRSNet_RandomSP,
     SRSNet_RandomSPNoShuffle,
     SRSNet_RandomSPRandomShuffle,
     SRSNet_RandomSP_HypernetAF,
+    SRSNet_RandomSP_NoShuffle_HypernetAF,
     SRSNet_RandomSRS,  # backwards-compat alias of SRSNet_RandomSP
     SRSNet_TASP,
     SRSNet_TASP_HypernetAF,
+    SRSNet_TASP_NoShuffle_HypernetAF,
 )
 from ts_benchmark.baselines.srs_paper.plugins import (
     SRSPlusCrossformer,
@@ -32,14 +35,18 @@ __all__ = [
     "SRSNet_RandomSP",
     "SRSNet_RandomSPNoShuffle",
     "SRSNet_RandomSPRandomShuffle",
-    # Constructive extensions
+    # Constructive extensions (1-axis)
     "SRSNet_TASP",
     "SRSNet_HypernetAF",
     "SRSNet_PSRS",
-    # Factorial combinations
+    # Factorial combinations (2-axis: Select x Fusion)
     "SRSNet_TASP_HypernetAF",
     "SRSNet_RandomSP_HypernetAF",
     "SRSNet_PSRS_HypernetAF",
+    # 3-axis combos (Select x Identity-Shuffle x Hypernet-Fusion)
+    "SRSNet_TASP_NoShuffle_HypernetAF",
+    "SRSNet_RandomSP_NoShuffle_HypernetAF",
+    "SRSNet_PSRS_NoShuffle_HypernetAF",
     "SRSNet_RandomSRS",
     "SRSPlusCrossformer",
     "SRSPlusPatchMLP",

@@ -53,10 +53,16 @@ SELECTIVITY_VARIANTS = [
     "srs_paper.SRSNet_TASP",         # FW#1 + L3
     "srs_paper.SRSNet_HypernetAF",   # FW#3 + L4
     "srs_paper.SRSNet_PSRS",         # FW#4 + L3
-    # Factorial combinations (Select x Fusion) -- complete the 3x2 design
+    # Factorial combinations (2-axis: Select x Fusion)
     "srs_paper.SRSNet_RandomSP_HypernetAF",
     "srs_paper.SRSNet_TASP_HypernetAF",
     "srs_paper.SRSNet_PSRS_HypernetAF",
+    # 3-axis combinations (Select + Identity Shuffle + Hypernet Fusion):
+    # checks whether the learned _shuffle is doing anything that the
+    # 2-axis combos overlooked.
+    "srs_paper.SRSNet_RandomSP_NoShuffle_HypernetAF",
+    "srs_paper.SRSNet_TASP_NoShuffle_HypernetAF",
+    "srs_paper.SRSNet_PSRS_NoShuffle_HypernetAF",
 ]
 
 # Lambda sweep for the PS-SRS auxiliary loss.  Values 0 / 1e-3 / 1e-2

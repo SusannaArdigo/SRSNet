@@ -426,6 +426,49 @@ SRSPatternSupervised_HypernetAF = _make_hypernet_combo(
 
 
 # ---------------------------------------------------------------------------
+# Three-extension combos: <base _select> + identity _shuffle + Hypernet-AF
+# ---------------------------------------------------------------------------
+def _make_3way_combo(two_way_combo_cls, combo_name):
+    """Add an identity ``_shuffle`` on top of an existing 2-way combo.
+
+    Each input ``two_way_combo_cls`` already pairs a custom ``_select``
+    with Hypernet-AF fusion.  This factory subclasses it once more to
+    drop the learned shuffle as well, producing a 3-axis change versus
+    vanilla SRS:
+
+        Select != Learned   AND   Shuffle == Identity   AND
+        Fusion == Hypernet alpha
+
+    Used to ask: "is the learned shuffle doing anything that the
+    factorial combos overlooked?"  Identity shuffle was chosen rather
+    than random shuffle because review note #3 of the original
+    selectivity plan picks it as the cleanest default control.
+    """
+
+    class _ThreeWayCombo(two_way_combo_cls):
+        """``two_way_combo_cls`` semantics + identity shuffle."""
+
+        def _shuffle(self, selected_patches):
+            return selected_patches
+
+    _ThreeWayCombo.__name__ = combo_name
+    _ThreeWayCombo.__qualname__ = combo_name
+    return _ThreeWayCombo
+
+
+SRSTimeAware_NoShuffle_HypernetAF = _make_3way_combo(
+    SRSTimeAware_HypernetAF, "SRSTimeAware_NoShuffle_HypernetAF"
+)
+SRSRandomSP_NoShuffle_HypernetAF = _make_3way_combo(
+    SRSRandomSP_HypernetAF, "SRSRandomSP_NoShuffle_HypernetAF"
+)
+SRSPatternSupervised_NoShuffle_HypernetAF = _make_3way_combo(
+    SRSPatternSupervised_HypernetAF,
+    "SRSPatternSupervised_NoShuffle_HypernetAF",
+)
+
+
+# ---------------------------------------------------------------------------
 # SRSNetModel subclasses (swap the patch_embedding for the random variant)
 # ---------------------------------------------------------------------------
 class _SelectivityControlsSRSNetModel(SRSNetModel):
@@ -496,6 +539,19 @@ class SRSNet_RandomSP_HypernetAF_Model(_SelectivityControlsSRSNetModel):
 
 class SRSNet_PSRS_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSPatternSupervised_HypernetAF
+
+
+# Three-extension combos
+class SRSNet_TASP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSTimeAware_NoShuffle_HypernetAF
+
+
+class SRSNet_RandomSP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSRandomSP_NoShuffle_HypernetAF
+
+
+class SRSNet_PSRS_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
+    embedding_cls = SRSPatternSupervised_NoShuffle_HypernetAF
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +651,39 @@ class SRSNet_PSRS_HypernetAF(_SelectivityControlsSRSNet):
         return out_loss
 
 
+# Three-extension combos (Select != Learned + Identity shuffle + Hypernet alpha)
+class SRSNet_TASP_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
+    """Engineered-feature select + identity shuffle + Hypernet alpha fusion."""
+
+    variant_name = "SRSNet_TASP_NoShuffle_HypernetAF"
+    model_cls = SRSNet_TASP_NoShuffle_HypernetAF_Model
+
+
+class SRSNet_RandomSP_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
+    """Random select + identity shuffle + Hypernet alpha fusion."""
+
+    variant_name = "SRSNet_RandomSP_NoShuffle_HypernetAF"
+    model_cls = SRSNet_RandomSP_NoShuffle_HypernetAF_Model
+
+
+class SRSNet_PSRS_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
+    """Learned select + aux descriptor head + identity shuffle + Hypernet alpha.
+
+    Same auxiliary-loss exposure as ``SRSNet_PSRS_HypernetAF``.
+    """
+
+    variant_name = "SRSNet_PSRS_NoShuffle_HypernetAF"
+    model_cls = SRSNet_PSRS_NoShuffle_HypernetAF_Model
+
+    def _process(self, input, target, input_mark, target_mark):
+        output = self.model(input)
+        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
+        out_loss = {"output": output}
+        if aux is not None and self.model.training:
+            out_loss["additional_loss"] = aux
+        return out_loss
+
+
 # Backwards compatibility alias: the old broad-extensions code referenced
 # ``srs_paper.SRSNet_RandomSRS``.  Keep that name as an alias so any stale
 # tasks in older manifests still resolve, but emit no behaviour difference.
@@ -611,6 +700,9 @@ for _cls in (
     SRSNet_TASP_HypernetAF,
     SRSNet_RandomSP_HypernetAF,
     SRSNet_PSRS_HypernetAF,
+    SRSNet_TASP_NoShuffle_HypernetAF,
+    SRSNet_RandomSP_NoShuffle_HypernetAF,
+    SRSNet_PSRS_NoShuffle_HypernetAF,
 ):
     _cls.MODEL_HYPER_PARAMS = MODEL_HYPER_PARAMS
 
@@ -624,10 +716,14 @@ __all__ = [
     "SRSTimeAware",
     "SRSHypernetAF",
     "SRSPatternSupervised",
-    # Layers -- factorial combinations
+    # Layers -- factorial combinations (2-axis)
     "SRSTimeAware_HypernetAF",
     "SRSRandomSP_HypernetAF",
     "SRSPatternSupervised_HypernetAF",
+    # Layers -- 3-axis combinations (identity shuffle on top of 2-axis)
+    "SRSTimeAware_NoShuffle_HypernetAF",
+    "SRSRandomSP_NoShuffle_HypernetAF",
+    "SRSPatternSupervised_NoShuffle_HypernetAF",
     # Model wrappers
     "SRSNet_RandomSP",
     "SRSNet_RandomSPNoShuffle",
@@ -638,6 +734,9 @@ __all__ = [
     "SRSNet_TASP_HypernetAF",
     "SRSNet_RandomSP_HypernetAF",
     "SRSNet_PSRS_HypernetAF",
+    "SRSNet_TASP_NoShuffle_HypernetAF",
+    "SRSNet_RandomSP_NoShuffle_HypernetAF",
+    "SRSNet_PSRS_NoShuffle_HypernetAF",
     # Backwards-compat alias
     "SRSNet_RandomSRS",
 ]
