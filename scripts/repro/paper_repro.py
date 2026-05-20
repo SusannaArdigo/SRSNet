@@ -588,7 +588,7 @@ PSRS_SWEEP_VARIANTS = [
 #   - TASP + Encoder
 #   - HypernetAF + Encoder
 #   - PSRS + Encoder
-# Total: 4 variants x 2 datasets x 2 horizons x 5 seeds = 80 tasks.
+# Total: 4 variants x 4 ETT datasets x 4 horizons (96/192/336/720) x 5 seeds = 320 tasks.
 ENCODER_EXT_VARIANTS = [
     "srs_paper.SRSNet_TransformerEncoder",
     "srs_paper.SRSNet_TASP_TransformerEncoder",
@@ -600,11 +600,11 @@ ENCODER_EXT_VARIANTS = [
 def _encoder_extension_tasks(scope, gpu):
     """Backbone extension: SRSNet + Transformer Encoder, alone and in combo with extensions.
 
-    Runs the small grid (2 datasets x 2 horizons x 5 seeds) for each of
-    the 4 encoder variants. Total: 80 tasks.
+    Runs the FULL ETT grid (4 datasets x 4 horizons x 5 seeds) for each
+    of the 4 encoder variants. Total: 4 x 4 x 4 x 5 = 320 tasks.
     """
     tasks = []
-    for dataset in SELECTIVITY_DATASETS_SMALL:
+    for dataset in SELECTIVITY_DATASETS_FULL:
         for model_name in ENCODER_EXT_VARIANTS:
             built = _official_tasks_for(
                 dataset,
@@ -616,7 +616,7 @@ def _encoder_extension_tasks(scope, gpu):
                 model_name=model_name,
                 adapter=None,
             )
-            tasks.extend(t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL))
+            tasks.extend(t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_FULL))
     return tasks
 
 
