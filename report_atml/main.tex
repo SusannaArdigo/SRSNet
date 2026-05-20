@@ -297,7 +297,9 @@ isolated as the only critical component.
   \caption{Reproduction of Table~4 of \citet{wu2025srsnet}, extended
     to the four ETT datasets (16 cells per variant). NoAF is the
     only ablation with a clearly visible MSE drop; the other three
-    ablations are statistically equivalent to the full SRSNet.}
+    ablations differ from the full SRSNet by less than $0.1\%$ on
+    average and are within the seed-level noise band (no paired
+    significance test was run on this table).}
   \label{tab:tab4}
   \begin{center}
   \begin{tabular}{lcr}
@@ -504,20 +506,42 @@ table:
 \paragraph{Results.}
 Figure~\ref{fig:variant-ranking} ranks the eight extensions by mean
 $\Delta$MSE versus SRSNet, and Table~\ref{tab:variant-stats} reports
-the corresponding paired $t$-test statistics. Every variant has
-$p > 0.4$, all $95\%$ CIs include zero, and the absolute Cohen's $d$
-never exceeds $0.18$. \textbf{No variant is statistically
+the corresponding paired $t$-test statistics for all $11$ variants
+(four 1-axis changes including RandomSPNoShuffle, three 2-axis
+combos, and three new 3-axis combos that stack identity shuffle on
+top of the (Select, Hypernet-AF) combos).  Every variant has $p >
+0.29$, all $95\%$ CIs include zero, and the absolute Cohen's $d$
+never exceeds $0.24$. \textbf{No variant is statistically
 distinguishable from the baseline at our sample size}, and a
 required-$n$ calculation indicates we would need $265$ to $650$
 seed cells per variant to detect a $0.2\%$ mean $\Delta$MSE with
 $80\%$ power at $\alpha = 0.05$ (we have $20$). Any reading beyond
 "effects are within the seed-level noise band" would be premature.
 
+The PSRS and PSRS\_HypernetAF rows in
+Table~\ref{tab:variant-stats} use the patched (v2) auxiliary loss
+with $\lambda = 10^{-2}$ and z-scored targets; the
+\verb|selectivity_controls.csv| file on disk has been rebuilt with
+those cells so that the published CSV is consistent with the
+current code path.  Earlier versions of this work reported the v1
+broken values ($+0.22\%$ for PSRS, $+0.12\%$ for PSRS\_HypernetAF);
+after the fix the same lambda yields $-0.27\%$ and $+0.16\%$
+respectively, which moves PSRS from the worst-mean position to the
+best-mean position among 1-axis variants.  This sign flip is
+consistent with the audit diagnosis (Section~\ref{sec:psrs-sweep}):
+the v1 unweighted MSE was dominated by the FFT term and was
+training the head to predict the wrong thing.
+
 \begin{table}[t]
   \caption{Paired $t$-test of each variant against the SRSNet
-    baseline across $20$ (dataset, horizon, seed) cells. None of the
-    variants reaches $p < 0.05$; effect sizes are all small in the
-    Cohen's $d$ sense ($|d| < 0.2$).}
+    baseline across $20$ (dataset, horizon, seed) cells. The 11
+    variants cover three 1-axis changes (Random / TASP / HypernetAF /
+    PSRS), three 2-axis (Select $\times$ Fusion) combos, three new
+    3-axis combos (Select $\times$ Identity-Shuffle $\times$
+    Hypernet-AF), and the RandomSPNoShuffle control.  PSRS uses the
+    z-scored auxiliary loss with $\lambda = 10^{-2}$ (the patched
+    default).  \textbf{None of the variants reaches $p < 0.05$};
+    effect sizes are all small in the Cohen's $d$ sense ($|d| < 0.3$).}
   \label{tab:variant-stats}
   \begin{center}
   \small
@@ -525,14 +549,22 @@ $80\%$ power at $\alpha = 0.05$ (we have $20$). Any reading beyond
     \toprule
     Variant & mean $\Delta$\% (std) & $95\%$ CI & $p$ & Cohen's $d$ \\
     \midrule
-    SRSNet\_RandomSP                 & $-0.22$ ($1.23$) & $[-0.79, +0.35]$ & $0.43$ & $-0.18$ \\
-    SRSNet\_RandomSP\_HypernetAF     & $-0.20$ ($1.65$) & $[-0.98, +0.57]$ & $0.59$ & $-0.12$ \\
-    SRSNet\_RandomSPNoShuffle        & $-0.12$ ($1.46$) & $[-0.80, +0.57]$ & $0.72$ & $-0.08$ \\
-    SRSNet\_HypernetAF               & $-0.09$ ($1.44$) & $[-0.76, +0.58]$ & $0.78$ & $-0.06$ \\
-    SRSNet\_TASP\_HypernetAF         & $-0.02$ ($1.23$) & $[-0.60, +0.56]$ & $0.95$ & $-0.02$ \\
-    SRSNet\_PSRS\_HypernetAF         & $+0.12$ ($1.16$) & $[-0.42, +0.67]$ & $0.64$ & $+0.11$ \\
-    SRSNet\_PSRS                     & $+0.22$ ($1.21$) & $[-0.35, +0.78]$ & $0.43$ & $+0.18$ \\
-    SRSNet\_TASP                     & $+0.25$ ($1.82$) & $[-0.60, +1.10]$ & $0.54$ & $+0.14$ \\
+    \multicolumn{5}{l}{\emph{1-axis changes}} \\
+    SRSNet\_RandomSP                          & $-0.22$ ($1.23$) & $[-0.79, +0.35]$ & $0.43$ & $-0.18$ \\
+    SRSNet\_RandomSPNoShuffle                 & $-0.12$ ($1.46$) & $[-0.80, +0.57]$ & $0.72$ & $-0.08$ \\
+    SRSNet\_HypernetAF                        & $-0.09$ ($1.44$) & $[-0.76, +0.58]$ & $0.78$ & $-0.06$ \\
+    \textbf{SRSNet\_PSRS} (z-scored)          & $\mathbf{-0.27}$ ($1.14$) & $[-0.81, +0.26]$ & $0.30$ & $-0.24$ \\
+    SRSNet\_TASP                              & $+0.25$ ($1.82$) & $[-0.60, +1.10]$ & $0.54$ & $+0.14$ \\
+    \midrule
+    \multicolumn{5}{l}{\emph{2-axis combos (Select $\times$ Fusion)}} \\
+    SRSNet\_RandomSP\_HypernetAF              & $-0.20$ ($1.65$) & $[-0.98, +0.57]$ & $0.59$ & $-0.12$ \\
+    SRSNet\_TASP\_HypernetAF                  & $-0.02$ ($1.23$) & $[-0.60, +0.56]$ & $0.95$ & $-0.02$ \\
+    SRSNet\_PSRS\_HypernetAF (z-scored)       & $+0.16$ ($1.05$) & $[-0.33, +0.65]$ & $0.50$ & $+0.15$ \\
+    \midrule
+    \multicolumn{5}{l}{\emph{3-axis combos (Select $\times$ Identity-Shuffle $\times$ Hypernet-AF)}} \\
+    SRSNet\_RandomSP\_NoShuffle\_HypernetAF   & $-0.24$ ($1.53$) & $[-0.96, +0.47]$ & $0.49$ & $-0.16$ \\
+    SRSNet\_PSRS\_NoShuffle\_HypernetAF       & $+0.05$ ($1.22$) & $[-0.52, +0.63]$ & $0.85$ & $+0.04$ \\
+    SRSNet\_TASP\_NoShuffle\_HypernetAF       & $+0.07$ ($0.97$) & $[-0.38, +0.53]$ & $0.74$ & $+0.08$ \\
     \bottomrule
   \end{tabular}
   \end{center}

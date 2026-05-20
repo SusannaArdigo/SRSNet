@@ -1,0 +1,44 @@
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.data_source(126): Start loading 1 series in parallel
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.data_source(135): Data loading finished.
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.suites.global_storage(40): Data server starting...
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.suites.global_storage(41): Start sending data to the global storage.
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.suites.global_storage(46): Notifying all workers to sync data from the global storage.
+2026-05-16 08:06:00 [INFO] ts_benchmark.data.suites.global_storage(49): Data server started.
+2026-05-16 08:06:00 [INFO] ts_benchmark.models.model_loader(102): Trying to load model ts_benchmark.baselines.srsnet.SRSNet
+
+scheduling SRSNet:   0%|          | 0/1 [00:00<?, ?it/s]2026-05-16 08:06:01 [WARNING] ts_benchmark.baselines.deep_forecasting_model_base(56): The model parameter horizon is deprecated. Please use pred_len.
+
+scheduling SRSNet: 100%|██████████| 1/1 [00:48<00:00, 48.97s/it]
+scheduling SRSNet: 100%|██████████| 1/1 [00:48<00:00, 48.97s/it]
+---------------------------------------------------------- SRSNet
+Total trainable parameters: 568069
+Validation loss decreased (inf --> 0.348078).  Saving model ...
+Updating learning rate to 0.0001
+Validation loss decreased (0.348078 --> 0.344785).  Saving model ...
+Updating learning rate to 5e-05
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 2.5e-05
+Validation loss decreased (0.344785 --> 0.342417).  Saving model ...
+Updating learning rate to 1.25e-05
+Validation loss decreased (0.342417 --> 0.341831).  Saving model ...
+Updating learning rate to 6.25e-06
+Validation loss decreased (0.341831 --> 0.341803).  Saving model ...
+Updating learning rate to 3.125e-06
+Validation loss decreased (0.341803 --> 0.341548).  Saving model ...
+Updating learning rate to 1.5625e-06
+Validation loss decreased (0.341548 --> 0.341523).  Saving model ...
+Updating learning rate to 7.8125e-07
+EarlyStopping counter: 1 out of 5
+Updating learning rate to 3.90625e-07
+EarlyStopping counter: 2 out of 5
+Updating learning rate to 1.953125e-07
+EarlyStopping counter: 3 out of 5
+Updating learning rate to 9.765625e-08
+EarlyStopping counter: 4 out of 5
+Updating learning rate to 4.8828125e-08
+EarlyStopping counter: 5 out of 5
+
+collecting SRSNet:   0%|          | 0/1 [00:00<?, ?it/s]
+collecting SRSNet: 100%|██████████| 1/1 [00:00<00:00, 71089.90it/s]
+collecting SRSNet: 100%|██████████| 1/1 [00:00<00:00, 11522.81it/s]
+2026-05-16 08:06:50 [INFO] ts_benchmark.recording(103): loading log file /home/ubuntu/SRSNet/result/repro/selectivity-controls/selectivity_controls/selectivity_controls_ETTh1_H96_SRSNet_s2023/SRSNet.1778918810.8e9af4e1-bd59-4abd-bd87-4b870b430c55-5f6cc66cbf-5llvp.2229.csv.tar.gz

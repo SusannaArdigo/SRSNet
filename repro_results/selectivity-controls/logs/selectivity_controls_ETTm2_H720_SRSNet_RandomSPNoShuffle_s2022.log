@@ -1,0 +1,56 @@
+2026-05-16 10:13:58 [INFO] ts_benchmark.data.data_source(126): Start loading 1 series in parallel
+2026-05-16 10:13:59 [INFO] ts_benchmark.data.data_source(135): Data loading finished.
+2026-05-16 10:13:59 [INFO] ts_benchmark.data.suites.global_storage(40): Data server starting...
+2026-05-16 10:13:59 [INFO] ts_benchmark.data.suites.global_storage(41): Start sending data to the global storage.
+2026-05-16 10:13:59 [INFO] ts_benchmark.data.suites.global_storage(46): Notifying all workers to sync data from the global storage.
+2026-05-16 10:13:59 [INFO] ts_benchmark.data.suites.global_storage(49): Data server started.
+2026-05-16 10:13:59 [INFO] ts_benchmark.models.model_loader(102): Trying to load model ts_benchmark.baselines.srs_paper.SRSNet_RandomSPNoShuffle
+
+scheduling SRSNet_RandomSPNoShuffle:   0%|          | 0/1 [00:00<?, ?it/s]2026-05-16 10:13:59 [WARNING] ts_benchmark.baselines.deep_forecasting_model_base(56): The model parameter horizon is deprecated. Please use pred_len.
+
+scheduling SRSNet_RandomSPNoShuffle: 100%|██████████| 1/1 [03:37<00:00, 217.12s/it]
+scheduling SRSNet_RandomSPNoShuffle: 100%|██████████| 1/1 [03:37<00:00, 217.12s/it]
+---------------------------------------------------------- SRSNet_RandomSPNoShuffle
+Total trainable parameters: 5923967
+Validation loss decreased (inf --> 0.324158).  Saving model ...
+Updating learning rate to 0.0001
+EarlyStopping counter: 1 out of 10
+Updating learning rate to 5e-05
+Validation loss decreased (0.324158 --> 0.319445).  Saving model ...
+Updating learning rate to 2.5e-05
+EarlyStopping counter: 1 out of 10
+Updating learning rate to 1.25e-05
+Validation loss decreased (0.319445 --> 0.316525).  Saving model ...
+Updating learning rate to 6.25e-06
+EarlyStopping counter: 1 out of 10
+Updating learning rate to 3.125e-06
+Validation loss decreased (0.316525 --> 0.314705).  Saving model ...
+Updating learning rate to 1.5625e-06
+EarlyStopping counter: 1 out of 10
+Updating learning rate to 7.8125e-07
+Validation loss decreased (0.314705 --> 0.314615).  Saving model ...
+Updating learning rate to 3.90625e-07
+EarlyStopping counter: 1 out of 10
+Updating learning rate to 1.953125e-07
+EarlyStopping counter: 2 out of 10
+Updating learning rate to 9.765625e-08
+EarlyStopping counter: 3 out of 10
+Updating learning rate to 4.8828125e-08
+EarlyStopping counter: 4 out of 10
+Updating learning rate to 2.44140625e-08
+EarlyStopping counter: 5 out of 10
+Updating learning rate to 1.220703125e-08
+EarlyStopping counter: 6 out of 10
+Updating learning rate to 6.103515625e-09
+EarlyStopping counter: 7 out of 10
+Updating learning rate to 3.0517578125e-09
+EarlyStopping counter: 8 out of 10
+Updating learning rate to 1.52587890625e-09
+EarlyStopping counter: 9 out of 10
+Updating learning rate to 7.62939453125e-10
+EarlyStopping counter: 10 out of 10
+
+collecting SRSNet_RandomSPNoShuffle:   0%|          | 0/1 [00:00<?, ?it/s]
+collecting SRSNet_RandomSPNoShuffle: 100%|██████████| 1/1 [00:00<00:00, 32513.98it/s]
+collecting SRSNet_RandomSPNoShuffle: 100%|██████████| 1/1 [00:00<00:00, 9425.40it/s] 
+2026-05-16 10:17:36 [INFO] ts_benchmark.recording(103): loading log file /home/ubuntu/SRSNet/result/repro/selectivity-controls/selectivity_controls/selectivity_controls_ETTm2_H720_SRSNet_RandomSPNoShuffle_s2022/SRSNet_RandomSPNoShuffle.1778926656.8e9af4e1-bd59-4abd-bd87-4b870b430c55-5f6cc66cbf-5llvp.13389.csv.tar.gz
