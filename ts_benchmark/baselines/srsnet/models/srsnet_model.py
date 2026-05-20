@@ -8,30 +8,38 @@ from ts_benchmark.baselines.srsnet.layers.RevIN import RevIN
 
 
 class FlattenHead(nn.Module):
-    """Forecasting head: flatten the (d_model, patch_num) block and project to the horizon."""
+    """Forecasting head (paper Sec. 4, eq. 15-16): flatten the (d, n) block and project to L."""
 
     def __init__(self, n_vars, nf, target_window, head_dropout=0, mode='linear'):
         """
-        :param n_vars:        number of channels N
-        :param nf:            d_model * patch_num  (size after flatten)
-        :param target_window: horizon L (number of future steps to predict)
-        :param head_dropout:  dropout on the head output
-        :param mode:          'linear' = single Linear, anything else = 2-layer MLP
+        n_vars:        number of channels (N)
+        nf:            d_model * patch_num (size after flatten)
+        target_window: horizon L (number of future steps to predict)
+        head_dropout:  dropout on the head output
+        mode:          'linear' = single Linear, anything else = 2-layer MLP
         """
         super().__init__()
         self.n_vars = n_vars
-        self.flatten = nn.Flatten(start_dim=-2)                                                     # collapse last two dims (d_model, patch_num)
+
+        # eq. 15:  Flatten := R^(N x n x d) -> R^(N x (n·d))
+        self.flatten = nn.Flatten(start_dim=-2)                                                     # [..., d, n] -> [..., d·n]  -- collapse last two dims
+
+        # eq. 15:  MLP := R^(N x (n·d)) -> R^(N x L)
         if mode == 'linear':
-            self.head = nn.Linear(nf, target_window)                                                # one-shot regression  nf -> L
+            self.head = nn.Linear(nf, target_window)                                                # [..., n·d] -> [..., L]     -- one-shot linear regression
         else:
             # 2-layer MLP variant: nf -> nf/2 -> L  with SiLU activation
             self.head = nn.Sequential(nn.Linear(nf, nf // 2), nn.SiLU(), nn.Linear(nf // 2, target_window))
-        self.dropout = nn.Dropout(head_dropout)
 
-    def forward(self, x):  # x: [B, n_vars, d_model, patch_num]
-        x = self.flatten(x)                                                                         # [B, n_vars, d_model * patch_num]
-        x = self.head(x)                                                                            # [B, n_vars, target_window]
-        x = self.dropout(x)
+        self.dropout = nn.Dropout(head_dropout)                                                     # float prob   -- no shape change
+
+    def forward(self, x):
+        # x: [B, n_vars, d_model, patch_num]
+        # eq. 16 part 1:  Flatten(E)
+        x = self.flatten(x)                                                                         # [B, n_vars, d_model·patch_num]  -- flatten (d, n) -> (d·n)
+        # eq. 16 part 2:  MLP(Flatten(E))
+        x = self.head(x)                                                                            # [B, n_vars, L]                  -- project to the horizon
+        x = self.dropout(x)                                                                         # [B, n_vars, L]                  -- regularization
         return x
 
 
