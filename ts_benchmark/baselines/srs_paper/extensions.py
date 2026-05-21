@@ -41,60 +41,182 @@ from ts_benchmark.baselines.srsnet.srsnet import MODEL_HYPER_PARAMS, SRSNet
 # Random selective-patching layers
 # ---------------------------------------------------------------------------
 class SRSRandomSP(SRS):
-    """Random ``_select``: uniformly random index for each output slot.
+    """Random ``_select``, learned ``_shuffle`` -- negative control for the scorer.
 
-    WHY: negative-control. Tests if the learned scorer matters at all.
-    The shuffle is kept learned so the only thing changing is selection.
-    Scorer params still exist (shape compat) but get no gradient.
+    ----------------------------------------------------------------
+    1) The problem this control tries to expose
+    ----------------------------------------------------------------
+    Vanilla SRS uses Scorer^s + Argmax to pick the n "best" candidates
+    out of K. The paper claims this finds the most informative
+    subsequences, but the claim is not directly tested. We have no way
+    to know if the scorer matters, or if any n patches would do.
+
+    ----------------------------------------------------------------
+    2) The idea
+    ----------------------------------------------------------------
+    Replace Scorer^s + Argmax with a uniform random index per output
+    slot. Everything else (learned shuffle, fusion, embedding) stays
+    untouched. If random selection matches the learned one in MSE,
+    the "selectivity" claim does not hold on our grid.
     """
 
     def _select(self, x_rec):
-        # x_rec: [B, N, K, p] -- random index per output slot, no scores
+        """Random selection: skip Scorer^s + Argmax, draw uniform indices instead.
+
+        Paper notation (only the symbols that survive in the random control):
+            P'        all K stride=1 candidate patches (input)
+            idx       uniform random indices in [0, K)      (replaces I^s)
+            P^s_max   the n picked patches (returned, no STE)
+        """
+        # P' = x_rec  [B, N, K, p]
         batch, n_vars, candidate_num, patch_size = x_rec.shape
+
+        # Replaces eq. 1+2: draw uniform random index per (batch, channel, slot).
+        # No Scorer^s call -- scorer_select still exists for state-dict compat
+        # but receives no gradient through this forward.
         idx = torch.randint(low=0, high=candidate_num,
                             size=(batch, n_vars, 1, self.patch_num),
-                            device=x_rec.device)
-        gather_idx = idx.repeat(1, 1, patch_size, 1).permute(0, 1, 3, 2)   # broadcast on patch_len
-        return torch.gather(x_rec, dim=-2, index=gather_idx)               # [B, N, n, p]
+                            device=x_rec.device)                            # idx   [B, N, 1, n]
+
+        # Reshape to the [B, N, n, p] form that torch.gather expects:
+        # repeat the index across patch_len so we pull a whole patch per slot.
+        gather_idx = idx.repeat(1, 1, patch_size, 1).permute(0, 1, 3, 2)    # gather_idx   [B, N, n, p]
+
+        # Replaces eq. 4 (and skips eq. 3+5 entirely -- no STE needed):
+        # P^s_max = P'[idx]
+        return torch.gather(x_rec, dim=-2, index=gather_idx)                # P^s_max   [B, N, n, p]
 
 
 class SRSRandomSPNoShuffle(SRSRandomSP):
-    """Random ``_select`` + identity ``_shuffle``.
+    """Random ``_select`` + identity ``_shuffle`` -- no learning anywhere in SRS.
 
-    WHY: cleanest "no learning anywhere in SRS" control. No randomness
-    in the shuffle stage, so all variance comes from _select.
+    ----------------------------------------------------------------
+    1) The problem this control tries to expose
+    ----------------------------------------------------------------
+    Even after SRSRandomSP removes the learned selector, the learned
+    Scorer^r is still active and could be carrying SRS on its own. If
+    the model still works with both stages disabled, then SRS itself
+    adds nothing and the paper's contribution reduces to "patch + head".
+
+    ----------------------------------------------------------------
+    2) The idea
+    ----------------------------------------------------------------
+    Inherit the random _select from SRSRandomSP and override _shuffle
+    to be the identity. No learned MLP runs inside the SRS path at all:
+    cleanest "SRS does nothing" baseline.
     """
 
     def _shuffle(self, selected_patches):
-        return selected_patches                                            # identity -- no reorder
+        """Identity reordering: skip Scorer^r + Argsort entirely.
+
+        Paper notation:
+            P~^s_max  the n selected patches (input, from _select)
+            P~        P~^s_max unchanged (returned)
+        """
+        # P~ = P~^s_max  [B, N, n, p]   (no reorder)
+        return selected_patches
 
 
 class SRSRandomSPRandomShuffle(SRSRandomSP):
-    """Random ``_select`` + random ``_shuffle``.
+    """Random ``_select`` + random ``_shuffle`` -- noise upper bound for SRS.
 
-    WHY: full-chaos baseline. Higher per-seed variance than NoShuffle
-    because both stages re-sample every forward.
+    ----------------------------------------------------------------
+    1) The problem this control tries to expose
+    ----------------------------------------------------------------
+    NoShuffle keeps patches in selection order, which is still a specific
+    (not arbitrary) ordering. The question: does ANY structure in the
+    SRS path matter, or is the model robust to pure noise on both stages?
+
+    ----------------------------------------------------------------
+    2) The idea
+    ----------------------------------------------------------------
+    Random _select (inherited) + random _shuffle (uniform scores ->
+    argsort). Both stages re-sample every forward pass. If the model
+    still works, the patches themselves carry the signal regardless
+    of order; if it crashes, even random "structure" beats no structure.
     """
 
     def _shuffle(self, selected_patches):
+        """Random reordering: skip Scorer^r + Argsort, use random scores instead.
+
+        Paper notation (only the symbols that survive in the random control):
+            P~^s_max  the n selected patches (input, from _select)
+            scores    uniform random in [0, 1)           (replaces S^r)
+            order     argsort(scores)                    (replaces I^r)
+            P~        randomly permuted patches (returned, no STE)
+        """
+        # P~^s_max = selected_patches  [B, N, n, p]
         batch, n_vars, patch_num, patch_size = selected_patches.shape
-        scores = torch.rand(batch, n_vars, patch_num, 1, device=selected_patches.device)
-        order = torch.argsort(scores, dim=-2, descending=True)             # random permutation
-        gather_idx = order.repeat(1, 1, 1, patch_size)
-        return torch.gather(selected_patches, dim=-2, index=gather_idx)
+
+        # Replaces eq. 6: uniform random scores instead of Scorer^r output.
+        scores = torch.rand(batch, n_vars, patch_num, 1,
+                            device=selected_patches.device)                 # scores   [B, N, n, 1]
+
+        # Replaces eq. 7: argsort of random scores = uniform random permutation.
+        # E.g. scores=[0.3, 0.9, 0.1] -> order=[1, 0, 2].
+        order = torch.argsort(scores, dim=-2, descending=True)              # order   [B, N, n, 1]
+
+        # Broadcast indices along patch_len so we reorder whole patches.
+        gather_idx = order.repeat(1, 1, 1, patch_size)                      # gather_idx   [B, N, n, p]
+
+        # Replaces eq. 9 (and skips eq. 8+10 -- no STE needed):
+        # P~ = P^r_sort = P~^s_max[order]
+        return torch.gather(selected_patches, dim=-2, index=gather_idx)     # P~   [B, N, n, p]
 
 
 # ---------------------------------------------------------------------------
 # Constructive extensions: TASP, Hypernet-AF
 # ---------------------------------------------------------------------------
 class SRSTimeAware(SRS):
-    """TASP: scorer over 4 engineered per-window features (FW#1 + L3).
+    """TASP -- Time-Aware Selective Patching (paper FW#1 + L3).
 
-    WHY: tests whether a tiny, *interpretable* scorer matches or beats
-    the opaque learned-over-raw-values scorer of vanilla SRS. Inputs are
-    dominant FFT magnitude, lag-1 autocorrelation, variance, trend slope.
-    Scorer params drop from ~6k to ~370, so any gain is NOT from capacity.
-    Shuffle scorer is untouched -- changes are attributable to _select only.
+    ----------------------------------------------------------------
+    1) The problem TASP tries to solve
+    ----------------------------------------------------------------
+    Vanilla SRS uses this scorer:
+
+        Linear(patch_len, hidden) -> ReLU -> Linear(hidden, patch_num)
+          24  ->  128                          128 -> n
+
+    An MLP that eats 24 raw patch values and produces n scores. It is
+    a black box: we have no idea WHY the model picks certain patches.
+    The paper claims "selective patching adaptively selects informative
+    subsequences" but the claim is not verifiable: the MLP could be
+    learning anything.
+
+    The paper itself acknowledges this in Section 6:
+        * FW#1: "develop time-series-specific selection mechanisms based on environmental priors" (use domain knowledge)
+        * L3:   the model is not interpretable
+
+    TASP is our answer to both points.
+
+    ----------------------------------------------------------------
+    2) The TASP idea
+    ----------------------------------------------------------------
+    Instead of feeding the scorer 24 raw values, we feed it 4
+    interpretable signal-processing features computed per patch:
+
+        #  Feature                     Answers...
+        -- --------------------------- --------------------------------
+        1  Dominant FFT magnitude      How periodic is this window?
+        2  Lag-1 autocorrelation       How smooth vs noisy?
+        3  Variance                    How much does it fluctuate?
+        4  Trend slope                 Going up / flat / down?
+
+    The MLP shrinks dramatically:
+
+                          Vanilla        TASP
+        Input             24 (raw)       4  (engineered)
+        Hidden            128            16
+        Output            n              n
+        Params total     ~6,000         ~370   (-94%)
+
+    Key point: if TASP matches or beats vanilla with 94% fewer scorer
+    parameters, those 4 features carry enough information to pick
+    patches well AND the choice is interpretable (e.g. "the model
+    picked the most periodic patch", "the one with the strongest
+    trend"). The shuffle scorer is left intact, so any MSE change is
+    attributable only to _select.
     """
 
     N_FEATURES = 4
@@ -112,49 +234,137 @@ class SRSTimeAware(SRS):
 
     @staticmethod
     def _window_features(x_rec):
-        """Compute (FFT max, lag-1 autocorr, var, trend slope) per window.
+        """Compute feature (FFT, lag-1 autocorr, var, trend slope) per window.
 
         x_rec: [B, C, candidate_num, patch_size] -> [B, C, candidate_num, 4]
         """
-        # 1) Dominant non-DC FFT magnitude (seasonality strength)
+        # Feature 1: Dominant non-DC FFT magnitude 
+        # Apply an FFT to break the patch into sine waves.
+        # Reading: high = the patch has a strong periodic component; low = flat or aperiodic.
         spec = torch.fft.rfft(x_rec, dim=-1).abs()
         dominant = spec[..., 1:].max(dim=-1).values if spec.shape[-1] > 1 else spec[..., 0]
-        # 2) variance + 3) lag-1 autocorrelation (smoothness)
+
+        # Shared prep for the next two features: patch mean + centered signal.
         mean = x_rec.mean(dim=-1, keepdim=True)
-        var = x_rec.var(dim=-1, unbiased=False)
         x_c = x_rec - mean
+
+        # Feature 3: Variance 
+        # Plain variance: how much the values bounce around their own mean.
+        # Reading: high = the patch fluctuates a lot; 
+        #          low = flat / stable.
+        var = x_rec.var(dim=-1, unbiased=False)
+
+        # Feature 2: Lag-1 autocorrelation 
+        # Correlation between the signal and itself shifted by one step.
+        # Closed form on the centered signal:
+        #     ac1 = sum( x_c[t] * x_c[t-1] )  /  sum( x_c[t]^2 )
+        # Reading: +1 = very smooth (neighbour values almost identical);
+        #          0 = noisy, like white noise;
+        #          -1 = oscillating / zigzag.
         denom = x_c.pow(2).sum(dim=-1) + 1e-8
         ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
-        # 4) Trend slope via least-squares (linear-fit gradient)
+
+        # Feature 4: Trend slope 
+        # Slope of the best-fit straight line through the patch
+        # Reading: > 0 = patch is going up;
+        #          0 = flat;
+        #          < 0 = going down.
         t = torch.arange(x_rec.shape[-1], device=x_rec.device, dtype=x_rec.dtype)
         t_c = t - t.mean()
         slope_denom = (t_c * t_c).sum() + 1e-8
         slope = ((x_rec - mean) * t_c).sum(dim=-1) / slope_denom
+
+        # Stack the four features along a new axis -> [B, C, K, 4]
         return torch.stack([dominant, ac1, var, slope], dim=-1)
 
     def _select(self, x_rec):
-        """Same straight-through select as vanilla SRS, but scorer eats features not values."""
-        feats = self._window_features(x_rec)                                    # [B, C, K, 4]
-        scores = self.scorer_select(feats)                                      # [B, C, K, n]
-        indices = torch.argmax(scores, dim=-2, keepdim=True)                    # I^s (eq. 2)
-        max_scores = torch.gather(input=scores, dim=-2, index=indices)
-        non_zero_mask = max_scores != 0
-        inv = (1 / max_scores[non_zero_mask]).detach()                          # detached reciprocal
-        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)
-        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)
-        max_scores[non_zero_mask] *= inv                                        # STE: value=1, grad alive
-        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches
+        """Selective Patching with engineered features (paper Sec. 3.2, TASP variant).
+
+        Same flow as vanilla SRS._select; only the scorer input changes:
+        4 engineered features (FFT max, ac1, var, slope) instead of raw
+        patch values. From eq. 1 onward everything matches the paper.
+
+        Paper notation (same as vanilla):
+            P'        all K stride=1 candidate patches  (input)
+            Scorer^s  MLP that scores patches (TASP version: over 4 features)
+            S^s       full score tensor
+            I^s       argmax indices: which candidate fills each slot
+            S^s_max   score of the winning candidate per slot
+            S^s_inv   detached 1/S^s_max (no gradient)
+            P^s_max   the n winning patches
+            E^s       "1 with live gradient" (straight-through bridge)
+            P~^s_max  STE-bridged winning patches (returned)
+
+        Shapes: B=batch, N=channels, K=#candidates, n=patch_num, p=patch_len.
+        """
+        # P' = x_rec  [B, N, K, p]
+
+        # NEW vs vanilla SRS: replace raw values with 4 interpretable features.
+        feats = self._window_features(x_rec)                                # [B, N, K, 4]   (FFT max, ac1, var, slope)
+
+        # eq. 1+2:  S^s = Scorer^s(features),   I^s = Argmax_K(S^s)
+        scores  = self.scorer_select(feats)                                 # S^s   [B, N, K, n]
+        indices = torch.argmax(scores, dim=-2, keepdim=True)                # I^s   [B, N, 1, n]
+
+        # eq. 3:   S^s_max = S^s[I^s],   S^s_inv = detach(1/S^s_max)
+        max_scores    = torch.gather(input=scores, dim=-2, index=indices)   # S^s_max   [B, N, 1, n]
+        non_zero_mask = max_scores != 0                                     # skip rare zero scores
+        inv           = (1 / max_scores[non_zero_mask]).detach()            # S^s_inv   flat   (.detach blocks grad)
+
+        # eq. 4 (first half):  P^s_max = P'[I^s]
+        x_rec_indices    = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)  # broadcast on p
+        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)       # P^s_max   [B, N, n, p]
+
+        # eq. 4 (second half):  E^s = S^s_max * S^s_inv   (numerically = 1, grad alive)
+        max_scores[non_zero_mask] *= inv                                                # E^s   [B, N, 1, n]
+
+        # eq. 5:   P~^s_max = P^s_max * E^s   (straight-through: value unchanged, grad bridged)
+        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches            # P~^s_max  [B, N, n, p]
+
         return selected_patches
 
 
 class SRSHypernetAF(SRS):
-    """Hypernet-AF: data-dependent alpha via a tiny hypernet (FW#3 + L4).
+    """Hypernet-AF -- data-dependent Adaptive Fusion (paper FW#3 + L4).
 
-    WHY: replace the static [n, d] alpha with one computed per-instance.
-    A tiny hypernet eats a batch-level context vector (mean-pooled embedding)
-    and outputs the alpha. Init: zero weights + bias=3.5 so sigmoid(alpha)
-    starts at ~0.97 (same as vanilla SRSNet at step 0) -- any gain comes
-    from learned context-dependence, not from capacity at init.
+    ----------------------------------------------------------------
+    1) The problem Hypernet-AF tries to solve
+    ----------------------------------------------------------------
+    Vanilla SRS fuses the two views with one static parameter:
+
+        alpha = nn.Parameter([n, d_model])   # learned once, same for every input
+
+    At forward time the same alpha gets reused for every sample in the
+    batch : the fusion weight does not depend on what the input actually
+    looks like. The paper itself acknowledges this in Section 6:
+        * FW#3: "develop a more efficient update mechanism for alpha"
+        * L4:   the alpha init is a free hyper-parameter (no learned signal)
+
+    Hypernet-AF is our answer: make alpha a function of the input.
+
+    ----------------------------------------------------------------
+    2) The Hypernet-AF idea
+    ----------------------------------------------------------------
+    Instead of one static [n, d_model] alpha, we produce alpha per-batch
+    from a tiny hypernet over a context vector summarising the batch:
+
+        ctx = mean over batch * channels and over patches of E^c   (one vector of size d_model)
+        h   = ReLU(W_proj  @ ctx + b_proj)                          (HYPER_HIDDEN = 8)
+        a   = W_hyper @ h + b_hyper                                  (flat alpha, n*d_model entries)
+        alpha_dyn = a.view(n, d_model)
+        weight   = sigmoid(alpha_dyn)
+
+    Two important init choices keep the model "vanilla-preserving" at step 0:
+        * W_proj, W_hyper, b_proj  : zero-initialised
+        * b_hyper                  : constant = INIT_ALPHA = 3.5
+    so at step 0 alpha_dyn = 3.5 for every cell, sigmoid(3.5) ~= 0.97 --
+    the same value the original SRS uses by default. Any deviation from
+    this baseline must come from the hypernet LEARNING to make alpha
+    context-dependent, not from extra capacity at init.
+
+    The free [n, d_model] alpha parameter is replaced by a non-trainable
+    buffer of the same shape so state-dict shapes stay compatible with
+    vanilla SRSNet checkpoints.
     """
 
     HYPER_HIDDEN = 8
@@ -162,37 +372,88 @@ class SRSHypernetAF(SRS):
 
     def __init__(self, d_model, patch_len, stride, seq_len, dropout,
                  hidden_size, alpha=2.0, pos=True):
+        """Build SRS as usual, then swap the free alpha for the hypernet.
+
+        Paper notation -> code attribute:
+            alpha             self.alpha (vanilla) -> replaced
+            context_proj      W_proj  (Linear: d_model -> HYPER_HIDDEN)
+            hyper             W_hyper (Linear: HYPER_HIDDEN -> n*d_model)
+            INIT_ALPHA = 3.5  bias of the hypernet output, vanilla-preserving init
+        """
         super().__init__(d_model, patch_len, stride, seq_len, dropout,
                          hidden_size, alpha, pos)
-        # Replace the free alpha with the hypernet pattern. Keep a buffer
-        # under a placeholder name so state-dict shape stays compatible.
+
+        # Drop the free alpha; keep a non-trainable buffer of the same shape with all zeros so a vanilla SRSNet state-dict still loads without shape errors.
         if hasattr(self, "alpha"):
             self.register_buffer("_unused_alpha", torch.zeros_like(self.alpha.data))
             del self.alpha
-        self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)              # context -> hidden
-        self.hyper = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)    # hidden -> alpha (flat)
-        # Vanilla-preserving init: zero weights + bias=INIT_ALPHA so step 0 matches the paper.
+
+        # Hypernet: ctx -> h -> flat alpha
+        self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)                   # shrink: d_model -> H
+        self.hyper        = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)  # expand: H -> n*d_model
+
+        # Vanilla-preserving init: zero weights everywhere + bias = INIT_ALPHA on
+        # the output layer, so at step 0 we have sigmoid(INIT_ALPHA) ~= 0.97 --
+        # the same fusion weight as default SRSNet.
         nn.init.zeros_(self.context_proj.weight)
         nn.init.zeros_(self.context_proj.bias)
         nn.init.zeros_(self.hyper.weight)
         nn.init.constant_(self.hyper.bias, self.INIT_ALPHA)
 
     def forward(self, x):
-        n_vars = x.shape[1]
-        x = self.padding_patch_layer(x)
-        rec_repr_space = self._rec_view(x)                                     # P~
-        original_repr_space = self._origin_view(x)                             # P
-        e_orig = self.value_embedding_org(original_repr_space)                 # E^c (eq. 12)
-        e_rec = self.value_embedding_rec(rec_repr_space)                       # E^s (eq. 12)
-        # Context: mean across batch+channels and patches of E^c -> [d_model]
-        ctx = e_orig.mean(dim=0).mean(dim=0)
-        h = torch.relu(self.context_proj(ctx))                                 # [HYPER_HIDDEN]
-        alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])       # [n, d_model]
-        weight = torch.sigmoid(alpha_dyn)                                      # alpha in (0,1)
-        embedding = weight * e_orig + (1.0 - weight) * e_rec                   # eq. 13
+        """SRS forward with Hypernet-AF fusion in place of the static alpha.
+
+        Paper notation:
+            X         input lookback window
+            X'        right-padded X
+            P         original view  (adjacent patches)
+            P~        reconstructive view  (selective + shuffled)
+            E^c       PatchEmbedding^1(P)
+            E^s       PatchEmbedding^2(P~)
+            ctx       mean-pooled context vector                                 [d_model]   (NEW)
+            h         hypernet hidden activation                                 [H]         (NEW)
+            alpha_dyn per-instance fusion weight (replaces the static alpha)     [n, d]      (NEW)
+            alpha     sigmoid(alpha_dyn) in (0, 1)                               [n, d]      (NEW)
+            E~        convex combo of E^c and E^s
+            E         E~ + PositionEmbedding(P)  (returned)
+
+        Shapes: B=batch, N=channels, T=lookback, T_pad=padded length,
+                n=patch_num, p=patch_len, d=d_model, H=HYPER_HIDDEN.
+        """
+        # X = x  [B, N, T]
+        n_vars = x.shape[1]                                                     # N
+
+        # Sec. 3.1:  X' = pad_right(X)
+        x = self.padding_patch_layer(x)                                         # X'   [B, N, T_pad]
+
+        # Sec. 3.2+3.3:  P~ from _rec_view  (calls _select then _shuffle)
+        rec_repr_space      = self._rec_view(x)                                 # P~   [B*N, n, p]
+        # Sec. 3.1:       P from _origin_view  (adjacent stride-s patches)
+        original_repr_space = self._origin_view(x)                              # P    [B*N, n, p]
+
+        # eq. 12:  E^c = PatchEmbedding^1(P),   E^s = PatchEmbedding^2(P~)
+        e_orig = self.value_embedding_org(original_repr_space)                  # E^c   [B*N, n, d]
+        e_rec  = self.value_embedding_rec(rec_repr_space)                       # E^s   [B*N, n, d]
+
+        # NEW vs vanilla SRS: produce alpha at runtime from the batch.
+        #   ctx       = mean(E^c)               : batch fingerprint
+        #   h         = ReLU(W_proj  @ ctx)     : compress to H
+        #   alpha_dyn = W_hyper @ h, reshaped   : expand to [n, d]
+        #   alpha     = sigmoid(alpha_dyn)      : map to (0, 1)
+        ctx       = e_orig.mean(dim=0).mean(dim=0)                              # ctx         [d]
+        h         = torch.relu(self.context_proj(ctx))                          # h           [H]
+        alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])        # alpha_dyn   [n, d]
+        weight    = torch.sigmoid(alpha_dyn)                                    # alpha       [n, d]   (replaces self.alpha)
+
+        # eq. 13:  E~ = alpha * E^c + (1 - alpha) * E^s
+        embedding = weight * e_orig + (1.0 - weight) * e_rec                    # E~    [B*N, n, d]
+
+        # eq. 14:  E = E~ + PositionEmbedding(P)
         if self.pos:
-            embedding = embedding + self.position_embedding(original_repr_space)
-        return self.dropout(embedding), n_vars
+            embedding = embedding + self.position_embedding(original_repr_space)  # E    [B*N, n, d]
+
+        # Dropout (not in paper, standard regularization)
+        return self.dropout(embedding), n_vars                                  # [B*N, n, d], int
 
 
 # ---------------------------------------------------------------------------
@@ -423,77 +684,148 @@ class SRSNet_RandomSP_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
 # ---------------------------------------------------------------------------
 # Backbone extension: SRS + TransformerEncoder + FlattenHead
 # ---------------------------------------------------------------------------
-# Tests the paper's claim (Sec. 3.4 + Sec. 4) that a linear head over the
-# SRS embeddings is enough. Inserts a real Transformer Encoder between
-# the SRS output and the linear head and lets us measure the delta.
+# Inserts a standard nn.TransformerEncoder between the SRS module and the
+# linear FlattenHead. The encoder treats the n patch embeddings as a sequence
+# of length n with d_model channels and runs self-attention across patches.
+# Tests the paper's claim (Sec. 4) that "a Linear head is enough".
 #
 # Two extra hyper-params (read from config via getattr, defaults provided):
-#   encoder_n_heads  : number of self-attention heads (default 8)
-#   encoder_n_layers : number of Transformer encoder layers (default 2)
+#   encoder_n_heads  : number of self-attention heads     (default 8)
+#   encoder_n_layers : number of TransformerEncoderLayers (default 2)
 
 
 class _SRSNetWithEncoderModel(SRSNetModel):
-    """SRSNet baseline + Transformer Encoder between patch_embedding and head.
+    """SRSNet baseline + Transformer Encoder before the FlattenHead.
 
-    Same RevIN + SRS + FlattenHead as the paper, just with an encoder
-    block inserted on the SRS embeddings before they reach the head.
+    ----------------------------------------------------------------
+    1) The problem this extension tries to expose
+    ----------------------------------------------------------------
+    The SRSNet paper Sec. 4 states that "a simple Linear/MLP Head
+    (<= 2 layers)" is enough after the SRS module. This is a strong
+    claim: no Transformer, no attention, no extra capacity needed.
+    Was that actually true? Or did SRS dominate because no one tried
+    adding a real encoder on top?
+
+    ----------------------------------------------------------------
+    2) The idea
+    ----------------------------------------------------------------
+    Plug a standard nn.TransformerEncoder between SRS and the head:
+
+        RevIN(norm) -> SRS -> TransformerEncoder -> FlattenHead -> RevIN(denorm)
+                              ^^^^^^^^^^^^^^^^^^^
+                              NEW vs vanilla SRSNet
+
+    The encoder sees the n patch embeddings as a sequence of length n
+    with d_model channels: each of the n patches attends to all the
+    others and gets refined into a context-aware version. If MSE
+    improves, the paper's "linear head is enough" claim is incomplete.
     """
 
     def __init__(self, config):
-        super().__init__(config)                                                # builds revin, patch_embedding, head
-        n_heads = getattr(config, "encoder_n_heads", 8)
+        """Inherit vanilla SRSNetModel and append a TransformerEncoder.
+
+        Inherited from SRSNetModel via super().__init__():
+            self.revin            -- RevIN (norm / denorm)
+            self.patch_embedding  -- SRS module
+            self.head             -- FlattenHead (Flatten + Linear, eq. 15-16)
+        """
+        super().__init__(config)
+        n_heads  = getattr(config, "encoder_n_heads", 8)
         n_layers = getattr(config, "encoder_n_layers", 2)
+        # Standard PyTorch encoder layer: MHA self-attention + FFN + LayerNorm.
+        # batch_first=True so the layout matches SRS output [B*N, n, d].
         enc_layer = nn.TransformerEncoderLayer(
             d_model=config.d_model, nhead=n_heads,
             dim_feedforward=4 * config.d_model,
             dropout=config.dropout, activation='gelu', batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)    # [B*N, n, d] -> [B*N, n, d]
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)    # encoder   [B*N, n, d] -> [B*N, n, d]
 
     def forward(self, x_enc):
-        # x_enc: [B, T, N]
-        x_enc = self.revin(x_enc, 'norm')                                       # [B, T, N]    -- Sec. 3.1 norm
-        x_enc = x_enc.permute(0, 2, 1)                                          # [B, N, T]    -- channel-independent layout
+        """Forward: RevIN -> SRS -> Encoder -> FlattenHead -> RevIN^-1.
 
-        enc_out, n_vars = self.patch_embedding(x_enc)                           # [B*N, n, d]  -- SRS module (Sec. 3.2-3.4)
-        enc_out = self.encoder(enc_out)                                         # [B*N, n, d]  -- self-attention over patches  ← NEW
+        Paper notation:
+            X       input lookback window               [B, T, N]
+            X_norm  RevIN-normalized X                  [B, T, N]
+            E       SRS patch embeddings                [B*N, n, d]
+            E_attn  E refined by self-attention         [B*N, n, d]   (NEW)
+            Y_norm  forecast in normalized scale        [B, L, N]
+            Y       forecast in original scale (out)    [B, L, N]
+        """
+        # X = x_enc  [B, T, N]
 
-        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
-        enc_out = enc_out.permute(0, 1, 3, 2)                                   # [B, N, d, n] -- FlattenHead wants d before n
+        # Sec. 3.1: RevIN normalization (per sample, per channel)
+        x_enc = self.revin(x_enc, 'norm')                                       # X_norm   [B, T, N]
 
-        dec_out = self.head(enc_out).permute(0, 2, 1)                           # [B, L, N]    -- forecast in normalized scale
-        return self.revin(dec_out, 'denorm')                                    # [B, L, N]    -- back to original scale
+        # Move channel axis next to batch (SRS expects [B, N, T])
+        x_enc = x_enc.permute(0, 2, 1)                                          # [B, N, T]
+
+        # Sec. 3.2-3.4: SRS module turns the lookback window into n patches embedded in d_model dims
+        enc_out, n_vars = self.patch_embedding(x_enc)                           # E   [B*N, n, d]
+
+        # NEW vs vanilla: refine the SRS embeddings with self-attention.
+        # The encoder reads E as a "sequence of length n with d channels":
+        # each patch attends to every other patch -> patches become
+        # context-aware. Shape is unchanged.
+        enc_out = self.encoder(enc_out)                                         # E_attn   [B*N, n, d]
+
+        # Restore the channel axis (split B*N back into B and N)
+        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))  # [B, N, n, d]
+        enc_out = enc_out.permute(0, 1, 3, 2)                                   # [B, N, d, n]   FlattenHead wants d before n
+
+        # Sec. 4 eq. 15+16: Y_norm = MLP(Flatten(E_attn))   (one-shot prediction)
+        dec_out = self.head(enc_out).permute(0, 2, 1)                           # Y_norm   [B, L, N]
+
+        # Sec. 3.1: RevIN de-normalization (back to the original scale)
+        return self.revin(dec_out, 'denorm')                                    # Y   [B, L, N]
 
 
 class _SelectivityControlsSRSNetEncoderModel(_SelectivityControlsSRSNetModel):
-    """Selectivity-controls model (TASP / HypernetAF / ...) + Transformer Encoder.
+    """Selectivity-controls model + Transformer Encoder (combo).
 
-    Combines the 'swap patch_embedding' machinery of
-    ``_SelectivityControlsSRSNetModel`` with the Transformer Encoder addition
-    of ``_SRSNetWithEncoderModel``.
+    Same as ``_SRSNetWithEncoderModel`` except the SRS module is swapped
+    for one of our selectivity variants (TASP, HypernetAF, ...) via the
+    ``embedding_cls`` attribute inherited from
+    ``_SelectivityControlsSRSNetModel``. The Encoder block is identical.
+
+    WHY: ask "does the encoder also help when the SRS itself is modified?"
+    -- i.e. the encoder x selectivity factorial.
     """
 
     def __init__(self, config):
-        super().__init__(config)                                                # swaps patch_embedding via embedding_cls
-        n_heads = getattr(config, "encoder_n_heads", 8)
+        """Inherit selectivity-controls model + append the Encoder."""
+        super().__init__(config)                                                # _SelectivityControlsSRSNetModel sets patch_embedding via embedding_cls
+        n_heads  = getattr(config, "encoder_n_heads", 8)
         n_layers = getattr(config, "encoder_n_layers", 2)
         enc_layer = nn.TransformerEncoderLayer(
             d_model=config.d_model, nhead=n_heads,
             dim_feedforward=4 * config.d_model,
             dropout=config.dropout, activation='gelu', batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=n_layers)    # encoder   [B*N, n, d] -> [B*N, n, d]
 
     def forward(self, x_enc):
-        # Same shape pipeline as _SRSNetWithEncoderModel, with the swapped patch_embedding
-        x_enc = self.revin(x_enc, 'norm')
-        x_enc = x_enc.permute(0, 2, 1)
-        enc_out, n_vars = self.patch_embedding(x_enc)
-        enc_out = self.encoder(enc_out)
-        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
-        enc_out = enc_out.permute(0, 1, 3, 2)
-        dec_out = self.head(enc_out).permute(0, 2, 1)
-        return self.revin(dec_out, 'denorm')
+        """Same pipeline as _SRSNetWithEncoderModel.
+
+        The only thing that differs is the patch_embedding instance:
+        SRSTimeAware / SRSHypernetAF / ... instead of vanilla SRS (set
+        by the embedding_cls override in subclasses).
+        """
+        # Sec. 3.1: RevIN norm + channel-first layout
+        x_enc = self.revin(x_enc, 'norm')                                       # X_norm   [B, T, N]
+        x_enc = x_enc.permute(0, 2, 1)                                          # [B, N, T]
+
+        # SRS variant (TASP / HypernetAF / ...) instead of vanilla SRS
+        enc_out, n_vars = self.patch_embedding(x_enc)                           # E   [B*N, n, d]
+
+        # NEW vs vanilla: self-attention over patches
+        enc_out = self.encoder(enc_out)                                         # E_attn   [B*N, n, d]
+
+        # Reshape + permute for the head, then linear projection + denorm
+        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))  # [B, N, n, d]
+        enc_out = enc_out.permute(0, 1, 3, 2)                                   # [B, N, d, n]
+        dec_out = self.head(enc_out).permute(0, 2, 1)                           # Y_norm   [B, L, N]
+        return self.revin(dec_out, 'denorm')                                    # Y   [B, L, N]
 
 
 class SRSNet_TASP_TransformerEncoder_Model(_SelectivityControlsSRSNetEncoderModel):
