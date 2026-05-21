@@ -369,11 +369,11 @@ sono più informativi per giudicare la necessità del modulo SRS.
 
 ## 8. Riferimenti per i numeri
 
-- `report_tables/tab2_full_paper_repro.csv` — Tab.2 estesa con 8 modelli × 16 cells
-- `report_tables/tab2_baselines_paper_delta.csv` — Delta% vs paper Tab.8 per ogni cell
-- `report_tables/tab3_plugin_paper_repro.csv` — Plug-in MLP↔SRSNet (8 pairs)
-- `report_tables/tab4_ablation_paper_repro.csv` — Ablation 4 componenti (40 cells)
+- `report_tables/tab2_srsnet.csv` — SRSNet vs paper Tab.2 (16 cells, ETT)
+- `report_tables/tab2_baselines.csv` — Other baselines (7 models) vs paper Tab.8
+- `report_tables/tab3_plugin.csv` — SRS plug-in study (currently SRSNet only)
+- `report_tables/tab4_ablation.csv` — Ablation: NoSP/NoDR/NoAF/NoSRS
 - **`report_tables/selectivity_controls.csv`** — 180 (cell, seed, variant) rows
-- **`report_tables/selectivity_controls.md`** — 9-variant aggregate + cross-comparison 9×9 + factorial decomposition
+- **`report_tables/encoder_extension.csv`** — Encoder backbone ablation (3 variants on full ETT grid)
 - `scripts/repro/selectivity_extension_plan.md` — Design del missing-control study + plan delle 3 estensioni costruttive
 - Repository: `github.com/SusannaArdigo/SRSNet`, branch `paper-faithful-repro-ett-extensions`

@@ -7,14 +7,16 @@ lite-paper su paper-faithful-repro-ett.
 
 Input:
     repro_results/lite-paper/summary.csv
+    repro_results/main-compat/summary.csv     (optional, for baselines)
+    repro_results/selectivity-controls/summary.csv  (optional)
 
 Output:
     report_tables/
-        tab2_srsnet_paper_repro.csv       # SRSNet main results (4 ETT × 4 H)
-        tab3_plugin_paper_repro.csv       # SRS plug-in comparison
-        tab4_ablation_paper_repro.csv     # Ablation study
-        paper_comparison_summary.csv      # Riassunto delta% per modello
-        paper_comparison_report.md        # Analisi qualitativa
+        tab2_srsnet.csv      # SRSNet main results (4 ETT x 4 H)
+        tab2_baselines.csv   # Other baselines (PatchTST, DLinear, ...) delta vs paper
+        tab3_plugin.csv      # SRS plug-in comparison
+        tab4_ablation.csv    # Paper ablation study (NoSP/NoDR/NoAF/NoSRS)
+        selectivity_controls.csv  # Our selectivity-controls study
 """
 from __future__ import annotations
 import csv
@@ -196,7 +198,7 @@ def delta_pct(ours, paper):
 
 def gen_tab2(rows):
     """SRSNet Tab.2 main results (4 ETT × 4 H, single seed)."""
-    out_path = OUT_DIR / "tab2_srsnet_paper_repro.csv"
+    out_path = OUT_DIR / "tab2_srsnet.csv"
     cells = {}
     for r in rows:
         if r["table"] == "table2_srsnet" and r["model"] == "SRSNet":
@@ -242,7 +244,7 @@ def gen_tab2(rows):
 
 def gen_tab3(rows):
     """Tab.3 SRS plug-in comparison: base model vs SRS+base model."""
-    out_path = OUT_DIR / "tab3_plugin_paper_repro.csv"
+    out_path = OUT_DIR / "tab3_plugin.csv"
     cells = {}  # (model, dataset, horizon) -> (mse, mae)
     for r in rows:
         if r["table"] == "table3_plugin":
@@ -281,7 +283,7 @@ def gen_tab3(rows):
 
 def gen_tab4(rows):
     """Tab.4 ablation: SRSNet Full + 4 variants × ETTh1+ETTm2."""
-    out_path = OUT_DIR / "tab4_ablation_paper_repro.csv"
+    out_path = OUT_DIR / "tab4_ablation.csv"
     cells = {}
     for r in rows:
         if r["table"] == "table4_ablation":
@@ -316,136 +318,6 @@ def gen_tab4(rows):
     print(f"  ✅ {out_path.name}: {len(lines)-2} cell rows + AVG ({len(variants)} variants × {len(datasets)*4} cells)")
 
 
-def gen_summary_stats(rows):
-    """Statistiche aggregate delta% per modello e dataset."""
-    out_path = OUT_DIR / "paper_comparison_summary.csv"
-    by_model = defaultdict(list)
-    by_dataset = defaultdict(list)
-
-    # Solo SRSNet ha valori paper, gli altri lasciamo confronto qualitativo
-    for r in rows:
-        if r["table"] != "table2_srsnet" or r["model"] != "SRSNet":
-            continue
-        ours_mse = to_float(r["mse"])
-        paper = PAPER_TAB2.get((r["dataset"], int(r["horizon"])))
-        if ours_mse is None or paper is None:
-            continue
-        d = delta_pct(ours_mse, paper[0])
-        if d is not None:
-            by_model["SRSNet"].append(d)
-            by_dataset[r["dataset"]].append(d)
-
-    lines = ["category,value,mean_delta_pct,abs_mean_delta_pct,n"]
-    for m, vals in sorted(by_model.items()):
-        mean_d = sum(vals) / len(vals)
-        abs_d = sum(abs(x) for x in vals) / len(vals)
-        lines.append(f"model,{m},{mean_d:+.2f},{abs_d:.2f},{len(vals)}")
-    for d, vals in sorted(by_dataset.items()):
-        mean_d = sum(vals) / len(vals)
-        abs_d = sum(abs(x) for x in vals) / len(vals)
-        lines.append(f"dataset,{d},{mean_d:+.2f},{abs_d:.2f},{len(vals)}")
-    out_path.write_text("\n".join(lines) + "\n")
-    print(f"  ✅ {out_path.name}")
-
-
-def gen_report(rows, srsnet_cells):
-    """Analisi narrativa Markdown."""
-    out_path = OUT_DIR / "paper_comparison_report.md"
-
-    # Compute deltas
-    deltas = []
-    for (ds, h), (paper_mse, _) in PAPER_TAB2.items():
-        if (ds, h) in srsnet_cells:
-            ours_mse, _ = srsnet_cells[(ds, h)]
-            if ours_mse is not None:
-                deltas.append((ds, h, ours_mse, paper_mse, delta_pct(ours_mse, paper_mse)))
-
-    bins = [
-        ("< 1% (match)", [d for d in deltas if abs(d[4]) < 1]),
-        ("1-5% (approx)", [d for d in deltas if 1 <= abs(d[4]) < 5]),
-        ("5-15% (notable)", [d for d in deltas if 5 <= abs(d[4]) < 15]),
-        (">= 15% (gap)", [d for d in deltas if abs(d[4]) >= 15]),
-    ]
-
-    worst = sorted(deltas, key=lambda x: abs(x[4]), reverse=True)[:5]
-    best = sorted(deltas, key=lambda x: abs(x[4]))[:5]
-    by_ds = defaultdict(list)
-    for d in deltas:
-        by_ds[d[0]].append(d[4])
-
-    md = ["# Confronto Run lite-paper-repro vs Paper SRSNet"]
-    md.append("")
-    md.append(f"**Branch:** `paper-faithful-repro-ett`  ")
-    md.append(f"**Pipeline:** TFB ufficiale (`scripts/run_benchmark.py` + `rolling_forecast_config.json`)  ")
-    md.append(f"**Modalità:** paper-mode (batch=64, train_drop_last=false)  ")
-    md.append(f"**Dataset:** 4 ETT × 4 horizon = 16 celle SRSNet  ")
-    md.append("")
-    md.append("## Distribuzione delta MSE (SRSNet 16 celle)")
-    md.append("")
-    md.append("| Range delta | N | % |")
-    md.append("|---|---|---|")
-    tot = sum(len(b) for _, b in bins)
-    for label, vals in bins:
-        pct = len(vals) / tot * 100 if tot else 0
-        md.append(f"| {label} | {len(vals)} | {pct:.1f}% |")
-    md.append("")
-
-    md.append("## Delta MSE medio per dataset")
-    md.append("")
-    md.append("| Dataset | Mean delta% | Interpretation |")
-    md.append("|---|---|---|")
-    for ds, vals in sorted(by_ds.items()):
-        avg = sum(vals) / len(vals)
-        interp = "noi MEGLIO del paper" if avg < -5 else ("noi PEGGIO del paper" if avg > 5 else "circa equivalenti")
-        md.append(f"| {ds} | {avg:+.2f}% | {interp} |")
-    md.append("")
-
-    md.append("## Top 5 worst (largest |delta|)")
-    md.append("")
-    md.append("| ds | H | nostro | paper | delta% |")
-    md.append("|---|---|---|---|---|")
-    for ds, h, ours, paper, d in worst:
-        md.append(f"| {ds} | {h} | {ours:.4f} | {paper:.3f} | {d:+.2f}% |")
-    md.append("")
-
-    md.append("## Top 5 best (closest match)")
-    md.append("")
-    md.append("| ds | H | nostro | paper | delta% |")
-    md.append("|---|---|---|---|---|")
-    for ds, h, ours, paper, d in best:
-        md.append(f"| {ds} | {h} | {ours:.4f} | {paper:.3f} | {d:+.2f}% |")
-    md.append("")
-
-    md.append("## Verdetto")
-    md.append("")
-    sig_mean = sum(d[4] for d in deltas) / len(deltas) if deltas else 0
-    abs_mean = sum(abs(d[4]) for d in deltas) / len(deltas) if deltas else 0
-    md.append(f"- **Delta MSE medio (signed)**: {sig_mean:+.2f}%")
-    md.append(f"- **Delta MSE medio (assoluto)**: {abs_mean:.2f}%")
-    md.append("")
-    md.append("### Pattern principali")
-    md.append("")
-    md.append("- **ETTh1**: SRSNet peggio del paper (gap crescente con horizon). Causa probabile: hardware/protocollo non disclosed.")
-    md.append("- **ETTh2 / ETTm2**: noi *spesso meglio* del paper. Possibile differenza nei dettagli di training.")
-    md.append("- **ETTm1**: noi leggermente peggio del paper.")
-    md.append("")
-    md.append("### Note metodologiche")
-    md.append("")
-    md.append("- I numeri provengono dalla **pipeline TFB ufficiale** del paper SRSNet.")
-    md.append("- Paper-mode applica `batch_size=64` e `train_drop_last=false` come da paper.")
-    md.append("- Seed singolo 2021. Paper riporta SRSNet con 5 seed (mean±std) ma `std ≈ 0.001-0.003` quindi trascurabile.")
-    md.append("- Lookback fissato a quello del vendor `.sh`. Paper dichiara cherry-pick {96, 336, 512} ma il `.sh` ha già il best.")
-    md.append("- cuDNN in modalità 'efficient' = stesso del paper (verificato in `rolling_forecast_config.json`).")
-    md.append("")
-    md.append("### Cause residue del gap col paper")
-    md.append("")
-    md.append("1. **Hardware**: paper su Tesla A800, noi su RTX 4090 (cuDNN/CUDA kernels diversi → float operations non bit-identiche)")
-    md.append("2. **cuDNN nondeterminism**: in modalità 'efficient' le operazioni convolution/attention non sono deterministiche")
-    md.append("3. **Eventuali optimization details** non rilasciati dagli autori")
-    md.append("")
-    md.append("Il gap è **strutturale, non eliminabile** senza accesso al setup esatto degli autori.")
-    out_path.write_text("\n".join(md) + "\n")
-    print(f"  ✅ {out_path.name}")
 
 
 def load_baselines_summary():
@@ -483,64 +355,11 @@ def load_baselines_summary():
     return rows
 
 
-def gen_tab2_full(srsnet_rows, baseline_rows):
-    """Tab.2 ESTESA con SRSNet + 7 baseline (8 modelli totali) × 4 ETT × 4 H.
-    Output: tab2_full_paper_repro.csv con delta% vs paper per ogni cella.
-    """
-    out_path = OUT_DIR / "tab2_full_paper_repro.csv"
-    models = ["SRSNet", "PatchTST", "DLinear", "iTransformer", "TimesNet",
-              "TimeMixer", "xPatch", "PatchMLP"]
-    datasets = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
-    horizons = [96, 192, 336, 720]
-
-    # Build cells dict: (model, ds, h) → (mse, mae)
-    cells = {}
-    for r in srsnet_rows:
-        if r["model"] == "SRSNet":
-            cells[("SRSNet", r["dataset"], int(r["horizon"]))] = (
-                to_float(r["mse"]), to_float(r["mae"]))
-    for r in baseline_rows:
-        cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
-            to_float(r["mse"]), to_float(r["mae"]))
-
-    # Build header
-    header = ["dataset", "horizon"]
-    for m in models:
-        header += [f"{m}_MSE", f"{m}_MAE"]
-    lines = [",".join(header)]
-
-    # Per-cell rows
-    avgs = {m: [] for m in models}
-    for d in datasets:
-        for h in horizons:
-            row = [d, str(h)]
-            for m in models:
-                cell = cells.get((m, d, h))
-                if cell is None or cell[0] is None:
-                    row += ["", ""]
-                else:
-                    row += [fmt(cell[0]), fmt(cell[1])]
-                    avgs[m].append(cell)
-            lines.append(",".join(row))
-
-    # AVERAGE row
-    avg_row = ["AVERAGE", ""]
-    for m in models:
-        if avgs[m]:
-            am = sum(c[0] for c in avgs[m]) / len(avgs[m])
-            ae = sum(c[1] for c in avgs[m]) / len(avgs[m])
-            avg_row += [fmt(am), fmt(ae)]
-        else:
-            avg_row += ["", ""]
-    lines.append(",".join(avg_row))
-
-    out_path.write_text("\n".join(lines) + "\n")
-    print(f"  ✅ {out_path.name}: {len(models)} models × {len(datasets)*len(horizons)} cells")
 
 
 def gen_baselines_paper_delta(baseline_rows):
-    """Confronto baseline vs paper Tab.8. Output: tab2_baselines_paper_delta.csv."""
-    out_path = OUT_DIR / "tab2_baselines_paper_delta.csv"
+    """Confronto baseline vs paper Tab.8. Output: tab2_baselines.csv."""
+    out_path = OUT_DIR / "tab2_baselines.csv"
     cells = {}
     for r in baseline_rows:
         cells[(r["model"], r["dataset"], int(r["horizon"]))] = (
@@ -1293,14 +1112,11 @@ def main():
     sel_rows = load_selectivity_summary()
     print(f"Loaded {len(sel_rows)} completed rows from selectivity-controls summary.csv")
     print()
-    srsnet_cells = gen_tab2(rows)
+    gen_tab2(rows)
     gen_tab3(rows)
     gen_tab4(rows)
-    gen_summary_stats(rows)
-    gen_report(rows, srsnet_cells)
     if baseline_rows:
         print()
-        gen_tab2_full(rows, baseline_rows)
         gen_baselines_paper_delta(baseline_rows)
     if ext_rows:
         print()
