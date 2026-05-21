@@ -1173,11 +1173,9 @@ def gen_selectivity_controls(sel_rows):
         ("Learned", "FreeAlpha"): "SRSNet",
         ("Random", "FreeAlpha"): "SRSNet_RandomSP",
         ("TASP", "FreeAlpha"): "SRSNet_TASP",
-        ("LearnedAux", "FreeAlpha"): "SRSNet_PSRS",
         ("Learned", "Hypernet"): "SRSNet_HypernetAF",
         ("Random", "Hypernet"): "SRSNet_RandomSP_HypernetAF",
         ("TASP", "Hypernet"): "SRSNet_TASP_HypernetAF",
-        ("LearnedAux", "Hypernet"): "SRSNet_PSRS_HypernetAF",
     }
     have_factorial = all(
         any(v == name for v in all_variants)

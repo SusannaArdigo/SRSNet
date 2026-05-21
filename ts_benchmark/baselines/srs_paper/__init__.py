@@ -7,10 +7,6 @@ from ts_benchmark.baselines.srs_paper.ablations import (
 from ts_benchmark.baselines.srs_paper.extensions import (
     SRSNet_HypernetAF,
     SRSNet_HypernetAF_TransformerEncoder,
-    SRSNet_PSRS,
-    SRSNet_PSRS_HypernetAF,
-    SRSNet_PSRS_NoShuffle_HypernetAF,
-    SRSNet_PSRS_TransformerEncoder,
     SRSNet_RandomSP,
     SRSNet_RandomSPNoShuffle,
     SRSNet_RandomSPRandomShuffle,
@@ -42,20 +38,16 @@ __all__ = [
     # Constructive extensions (1-axis)
     "SRSNet_TASP",
     "SRSNet_HypernetAF",
-    "SRSNet_PSRS",
     # Factorial combinations (2-axis: Select x Fusion)
     "SRSNet_TASP_HypernetAF",
     "SRSNet_RandomSP_HypernetAF",
-    "SRSNet_PSRS_HypernetAF",
     # 3-axis combos (Select x Identity-Shuffle x Hypernet-Fusion)
     "SRSNet_TASP_NoShuffle_HypernetAF",
     "SRSNet_RandomSP_NoShuffle_HypernetAF",
-    "SRSNet_PSRS_NoShuffle_HypernetAF",
     # Backbone extension (Transformer Encoder)
     "SRSNet_TransformerEncoder",
     "SRSNet_TASP_TransformerEncoder",
     "SRSNet_HypernetAF_TransformerEncoder",
-    "SRSNet_PSRS_TransformerEncoder",
     "SRSNet_RandomSRS",
     "SRSPlusCrossformer",
     "SRSPlusPatchMLP",

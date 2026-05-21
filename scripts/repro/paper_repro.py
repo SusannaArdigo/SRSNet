@@ -2,7 +2,7 @@
 """SRSNet paper repro runner.
 
 Orchestrator we use to run hundreds of TFB tasks across a few scoped
-studies (lite-paper, main-compat, selectivity-controls, psrs-sweep).
+studies (lite-paper, main-compat, selectivity-controls, encoder-extension).
 
 For each task:
   - read the vendor .sh under scripts/multivariate_forecast/...
@@ -86,26 +86,18 @@ SELECTIVITY_VARIANTS = [
     # Random controls (negative-control study)
     "srs_paper.SRSNet_RandomSP",
     "srs_paper.SRSNet_RandomSPNoShuffle",
-    # Constructive extensions (mapped to paper FW#1/3/4 + L3/L4)
+    # Constructive extensions (mapped to paper FW#1/3 + L4)
     "srs_paper.SRSNet_TASP",         # FW#1 + L3
     "srs_paper.SRSNet_HypernetAF",   # FW#3 + L4
-    "srs_paper.SRSNet_PSRS",         # FW#4 + L3
     # Factorial combinations (2-axis: Select x Fusion)
     "srs_paper.SRSNet_RandomSP_HypernetAF",
     "srs_paper.SRSNet_TASP_HypernetAF",
-    "srs_paper.SRSNet_PSRS_HypernetAF",
     # 3-axis combinations (Select + Identity Shuffle + Hypernet Fusion):
     # checks whether the learned _shuffle is doing anything that the
     # 2-axis combos overlooked.
     "srs_paper.SRSNet_RandomSP_NoShuffle_HypernetAF",
     "srs_paper.SRSNet_TASP_NoShuffle_HypernetAF",
-    "srs_paper.SRSNet_PSRS_NoShuffle_HypernetAF",
 ]
-
-# Lambda sweep for the PS-SRS auxiliary loss.  Values 0 / 1e-3 / 1e-2
-# / 1e-1 cover four orders of magnitude including the "no aux" control
-# (0.0) and the original v1 value (1e-2).
-PSRS_SWEEP_LAMBDAS = [0.0, 1e-3, 1e-2, 1e-1]
 
 # Rows that must run with effective_concurrency=1 (sole tenant on the GPU).
 # Each rule is a dict; a task matches a rule if ALL listed fields equal the
@@ -571,29 +563,17 @@ def _selectivity_controls_tasks(scope, gpu, grid):
     return tasks
 
 
-PSRS_SWEEP_VARIANTS = [
-    # (model_name, table_prefix).
-    # For backwards compatibility with the already-completed batch we
-    # keep the original "psrs_sweep" prefix for the standalone PS-SRS
-    # variant.  The combo gets its own prefix.
-    ("srs_paper.SRSNet_PSRS", "psrs_sweep"),
-    ("srs_paper.SRSNet_PSRS_HypernetAF", "psrs_sweep_combo"),
-]
-
-
 # Backbone extension (Transformer Encoder over SRS embeddings).
 # Tests the paper's claim 'a linear head is enough' (Sec. 4) by inserting
-# a TransformerEncoder between SRS and FlattenHead. 4 variants:
+# a TransformerEncoder between SRS and FlattenHead. 3 variants:
 #   - baseline + Encoder
 #   - TASP + Encoder
 #   - HypernetAF + Encoder
-#   - PSRS + Encoder
-# Total: 4 variants x 4 ETT datasets x 4 horizons (96/192/336/720) x 5 seeds = 320 tasks.
+# Total: 3 variants x 4 ETT datasets x 4 horizons (96/192/336/720) x 5 seeds = 240 tasks.
 ENCODER_EXT_VARIANTS = [
     "srs_paper.SRSNet_TransformerEncoder",
     "srs_paper.SRSNet_TASP_TransformerEncoder",
     "srs_paper.SRSNet_HypernetAF_TransformerEncoder",
-    "srs_paper.SRSNet_PSRS_TransformerEncoder",
 ]
 
 
@@ -601,7 +581,7 @@ def _encoder_extension_tasks(scope, gpu):
     """Backbone extension: SRSNet + Transformer Encoder, alone and in combo with extensions.
 
     Runs the FULL ETT grid (4 datasets x 4 horizons x 5 seeds) for each
-    of the 4 encoder variants. Total: 4 x 4 x 4 x 5 = 320 tasks.
+    of the 3 encoder variants. Total: 3 x 4 x 4 x 5 = 240 tasks.
     """
     tasks = []
     for dataset in SELECTIVITY_DATASETS_FULL:
@@ -618,33 +598,6 @@ def _encoder_extension_tasks(scope, gpu):
             )
             tasks.extend(t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_FULL))
     return tasks
-
-
-def _psrs_sweep_tasks(scope, gpu):
-    """PS-SRS lambda sweep: for each (variant, lambda) run the small grid (20 tasks each).
-
-    lambda=0 is the clean control (architecture unchanged, no aux loss).
-    Default total: 2 variants x 4 lambdas x 20 cells = 160 tasks.
-    """
-    tasks = []
-    for model_name, prefix in PSRS_SWEEP_VARIANTS:
-        for lam in PSRS_SWEEP_LAMBDAS:
-            lam_tag = f"lam{lam:g}".replace(".", "p")
-            for dataset in SELECTIVITY_DATASETS_SMALL:
-                built = _official_tasks_for(
-                    dataset,
-                    "SRSNet",
-                    scope=scope,
-                    table=f"{prefix}_{lam_tag}",
-                    gpu=gpu,
-                    seeds=tuple(SELECTIVITY_SEEDS),
-                    model_name=model_name,
-                    adapter=None,
-                    hyper_overrides={"lambda_aux": float(lam)},
-                )
-                tasks.extend(
-                    t for t in built if t.horizon in set(SELECTIVITY_HORIZONS_SMALL)
-                )
     return tasks
 
 
@@ -669,10 +622,6 @@ def build_tasks(scope, gpu):
 
     if scope == "selectivity-controls-full":
         tasks.extend(_selectivity_controls_tasks(scope, gpu, grid="full"))
-        return tasks
-
-    if scope == "psrs-sweep":
-        tasks.extend(_psrs_sweep_tasks(scope, gpu))
         return tasks
 
     if scope == "encoder-extension":
@@ -1458,10 +1407,6 @@ def main():
             # see scripts/repro/selectivity_extension_plan.md.
             "selectivity-controls",
             "selectivity-controls-full",
-            # PS-SRS lambda sweep with z-scored auxiliary targets,
-            # added after the audit identified scale issues with the v1
-            # auxiliary loss.
-            "psrs-sweep",
             # Backbone extension: SRS + TransformerEncoder + FlattenHead.
             # Tests the paper's claim 'a linear head is enough' (Sec. 4).
             "encoder-extension",

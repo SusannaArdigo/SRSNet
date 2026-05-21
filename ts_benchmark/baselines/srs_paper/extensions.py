@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 
 from ts_benchmark.baselines.srsnet.layers.SRS import SRS
@@ -115,7 +114,7 @@ class SRSRandomSPRandomShuffle(SRSRandomSP):
 
 
 # ---------------------------------------------------------------------------
-# Constructive extensions: TASP, Hypernet-AF, PS-SRS
+# Constructive extensions: TASP, Hypernet-AF
 # ---------------------------------------------------------------------------
 class SRSTimeAware(SRS):
     """TASP: scorer over engineered interpretable features.
@@ -235,114 +234,6 @@ class SRSHypernetAF(SRS):
         return self.dropout(embedding), n_vars
 
 
-class SRSPatternSupervised(SRS):
-    """PS-SRS: scorer trained with an auxiliary pattern-descriptor loss.
-
-    Addresses paper FW#4 (supervised module for sample-wise patterns) +
-    L3 (interpretability).  Adds an auxiliary head over the scorer's
-    first hidden layer that predicts a small set of engineered
-    descriptors (FFT magnitude, lag-1 autocorrelation, variance).  The
-    auxiliary loss is exposed via ``last_aux_loss`` so the SRSNet
-    wrapper can return it in ``out_loss["additional_loss"]``.  When the
-    layer is in ``eval()`` mode the auxiliary computation is skipped.
-
-    Design fixes vs the early v1 of this class (after the audit):
-
-    * The three descriptor targets (FFT max, lag-1 autocorrelation,
-      within-window variance) live at wildly different scales (FFT max
-      O(10), AC1 in [-1, 1], variance O(1)).  Unweighted MSE was
-      dominated by the FFT term, so the head effectively predicted only
-      FFT max.  We now z-score every descriptor across the batch
-      dimension before computing the auxiliary MSE, so each descriptor
-      contributes the same magnitude to the gradient.
-    * ``lambda_aux`` used to be hard-coded to 1e-2 with no sweep.  It
-      can now be overridden via the model hyper-parameters (``alpha``
-      stays for the fusion weight; the new key is ``lambda_aux``).
-      ``lambda_aux = 0`` is a clean control: same architecture, no
-      auxiliary signal.
-    """
-
-    N_DESCRIPTORS = 3
-    LAMBDA_AUX = 1e-2
-
-    def __init__(self, d_model, patch_len, stride, seq_len, dropout,
-                 hidden_size, alpha=2.0, pos=True, lambda_aux=None):
-        super().__init__(d_model, patch_len, stride, seq_len, dropout,
-                         hidden_size, alpha, pos)
-        # The scorer in the parent is nn.Sequential(Linear, ReLU, Linear).
-        # We tap into the first hidden activation (after the ReLU) and
-        # predict a per-window descriptor vector from it.
-        hidden_dim = self.scorer_select[0].out_features
-        self.descriptor_head = nn.Linear(hidden_dim, self.N_DESCRIPTORS)
-        self.last_aux_loss = torch.tensor(0.0)
-        # Allow the runner to override the default lambda without
-        # subclassing.  None means: keep the class-level default.
-        if lambda_aux is not None:
-            self.LAMBDA_AUX = float(lambda_aux)
-
-    @staticmethod
-    def _ground_truth_descriptors(x_rec):
-        """Compute the engineered descriptors used as auxiliary targets."""
-        spec = torch.fft.rfft(x_rec, dim=-1).abs()
-        if spec.shape[-1] > 1:
-            dominant = spec[..., 1:].max(dim=-1).values
-        else:
-            dominant = spec[..., 0]
-        mean = x_rec.mean(dim=-1, keepdim=True)
-        var = x_rec.var(dim=-1, unbiased=False)
-        x_c = x_rec - mean
-        denom = x_c.pow(2).sum(dim=-1) + 1e-8
-        ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
-        return torch.stack([dominant, ac1, var], dim=-1)
-
-    @staticmethod
-    def _zscore(targets):
-        """Z-score each descriptor across (batch, channel, candidate) dims.
-
-        ``targets`` shape: [B, C, candidate_num, N_DESCRIPTORS].  We
-        flatten the first three dims so every descriptor column has
-        mean 0 and std 1 across the batch.  Eps avoids division by
-        zero on a (degenerate) constant-valued descriptor.
-        """
-        flat = targets.reshape(-1, targets.shape[-1])
-        mean = flat.mean(dim=0, keepdim=True)
-        std = flat.std(dim=0, keepdim=True) + 1e-6
-        return (targets - mean) / std
-
-    def _select(self, x_rec):
-        # Compute scorer activations once, then reuse for both selection
-        # and the auxiliary loss.
-        first_layer = self.scorer_select[0]
-        relu = self.scorer_select[1]
-        second_layer = self.scorer_select[2]
-        h = relu(first_layer(x_rec))
-        scores = second_layer(h)
-
-        if self.training and self.LAMBDA_AUX > 0:
-            # Compute z-scored targets (no gradient) and z-scored
-            # predictions (gradient ON) so the auxiliary MSE is
-            # comparable across descriptors.
-            with torch.no_grad():
-                gt = self._ground_truth_descriptors(x_rec)
-                gt = self._zscore(gt)
-            pred = self.descriptor_head(h)
-            pred = self._zscore(pred)
-            self.last_aux_loss = F.mse_loss(pred, gt) * self.LAMBDA_AUX
-        else:
-            self.last_aux_loss = torch.tensor(0.0, device=x_rec.device)
-
-        # Mirror the parent's selection logic from this point on.
-        indices = torch.argmax(scores, dim=-2, keepdim=True)
-        max_scores = torch.gather(input=scores, dim=-2, index=indices)
-        non_zero_mask = max_scores != 0
-        inv = (1 / max_scores[non_zero_mask]).detach()
-        x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)
-        selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)
-        max_scores[non_zero_mask] *= inv
-        selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches
-        return selected_patches
-
-
 # ---------------------------------------------------------------------------
 # Factorial combinations: (any _select variant) x (Hypernet alpha fusion)
 # ---------------------------------------------------------------------------
@@ -352,7 +243,7 @@ def _make_hypernet_combo(base_select_cls, combo_name):
     parameter with a tiny hypernet over a batch-level context vector).
 
     The factory keeps the ``__init__`` and ``forward`` body in one place so
-    that all (Random/TASP/PSRS) x HypernetAF combos share identical fusion
+    that all (Random/TASP) x HypernetAF combos share identical fusion
     code.  Only the inherited ``_select`` differs.
     """
 
@@ -364,10 +255,6 @@ def _make_hypernet_combo(base_select_cls, combo_name):
 
         def __init__(self, d_model, patch_len, stride, seq_len, dropout,
                      hidden_size, alpha=2.0, pos=True, **extra_kwargs):
-            # Forward any extra kwargs (e.g. lambda_aux for PS-SRS) to
-            # the base _select variant's __init__.  Layers that do not
-            # accept the kwarg ignore it via super() because we filter
-            # at the model-wrapper layer before reaching here.
             super().__init__(
                 d_model, patch_len, stride, seq_len, dropout,
                 hidden_size, alpha, pos, **extra_kwargs,
@@ -420,9 +307,6 @@ SRSTimeAware_HypernetAF = _make_hypernet_combo(
 SRSRandomSP_HypernetAF = _make_hypernet_combo(
     SRSRandomSP, "SRSRandomSP_HypernetAF"
 )
-SRSPatternSupervised_HypernetAF = _make_hypernet_combo(
-    SRSPatternSupervised, "SRSPatternSupervised_HypernetAF"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -462,10 +346,6 @@ SRSTimeAware_NoShuffle_HypernetAF = _make_3way_combo(
 SRSRandomSP_NoShuffle_HypernetAF = _make_3way_combo(
     SRSRandomSP_HypernetAF, "SRSRandomSP_NoShuffle_HypernetAF"
 )
-SRSPatternSupervised_NoShuffle_HypernetAF = _make_3way_combo(
-    SRSPatternSupervised_HypernetAF,
-    "SRSPatternSupervised_NoShuffle_HypernetAF",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -492,15 +372,6 @@ class _SelectivityControlsSRSNetModel(SRSNetModel):
             alpha=config.alpha,
             pos=config.pos,
         )
-        # PS-SRS layers accept an optional ``lambda_aux`` hyper-param.  We
-        # only pass it when the layer signature supports it AND the user
-        # actually overrode the default.  Other layers ignore it.
-        lambda_aux = getattr(config, "lambda_aux", None)
-        if lambda_aux is not None:
-            import inspect
-            sig = inspect.signature(self.embedding_cls.__init__)
-            if "lambda_aux" in sig.parameters:
-                kwargs["lambda_aux"] = lambda_aux
         self.patch_embedding = self.embedding_cls(**kwargs)
 
 
@@ -524,10 +395,6 @@ class SRSNet_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSHypernetAF
 
 
-class SRSNet_PSRS_Model(_SelectivityControlsSRSNetModel):
-    embedding_cls = SRSPatternSupervised
-
-
 # Factorial combinations
 class SRSNet_TASP_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSTimeAware_HypernetAF
@@ -537,10 +404,6 @@ class SRSNet_RandomSP_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSRandomSP_HypernetAF
 
 
-class SRSNet_PSRS_HypernetAF_Model(_SelectivityControlsSRSNetModel):
-    embedding_cls = SRSPatternSupervised_HypernetAF
-
-
 # Three-extension combos
 class SRSNet_TASP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSTimeAware_NoShuffle_HypernetAF
@@ -548,10 +411,6 @@ class SRSNet_TASP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
 
 class SRSNet_RandomSP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
     embedding_cls = SRSRandomSP_NoShuffle_HypernetAF
-
-
-class SRSNet_PSRS_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel):
-    embedding_cls = SRSPatternSupervised_NoShuffle_HypernetAF
 
 
 # ---------------------------------------------------------------------------
@@ -596,27 +455,6 @@ class SRSNet_HypernetAF(_SelectivityControlsSRSNet):
     model_cls = SRSNet_HypernetAF_Model
 
 
-class SRSNet_PSRS(_SelectivityControlsSRSNet):
-    """SRSNet wrapper for PS-SRS.
-
-    Overrides ``_process`` to expose the auxiliary descriptor-recovery
-    loss as ``out_loss["additional_loss"]``.  The base
-    ``DeepForecastingModelBase`` already adds that key to the training
-    loss when present (see deep_forecasting_model_base.py:345-350).
-    """
-
-    variant_name = "SRSNet_PSRS"
-    model_cls = SRSNet_PSRS_Model
-
-    def _process(self, input, target, input_mark, target_mark):
-        output = self.model(input)
-        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
-        out_loss = {"output": output}
-        if aux is not None and self.model.training:
-            out_loss["additional_loss"] = aux
-        return out_loss
-
-
 # Factorial combinations (Select x Fusion)
 class SRSNet_TASP_HypernetAF(_SelectivityControlsSRSNet):
     """Engineered-feature select + Hypernet alpha fusion."""
@@ -632,25 +470,6 @@ class SRSNet_RandomSP_HypernetAF(_SelectivityControlsSRSNet):
     model_cls = SRSNet_RandomSP_HypernetAF_Model
 
 
-class SRSNet_PSRS_HypernetAF(_SelectivityControlsSRSNet):
-    """Supervised learned select + Hypernet alpha fusion.
-
-    Like SRSNet_PSRS this exposes the auxiliary descriptor loss via
-    ``out_loss["additional_loss"]`` so it is added to the training loss.
-    """
-
-    variant_name = "SRSNet_PSRS_HypernetAF"
-    model_cls = SRSNet_PSRS_HypernetAF_Model
-
-    def _process(self, input, target, input_mark, target_mark):
-        output = self.model(input)
-        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
-        out_loss = {"output": output}
-        if aux is not None and self.model.training:
-            out_loss["additional_loss"] = aux
-        return out_loss
-
-
 # Three-extension combos (Select != Learned + Identity shuffle + Hypernet alpha)
 class SRSNet_TASP_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
     """Engineered-feature select + identity shuffle + Hypernet alpha fusion."""
@@ -664,24 +483,6 @@ class SRSNet_RandomSP_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
 
     variant_name = "SRSNet_RandomSP_NoShuffle_HypernetAF"
     model_cls = SRSNet_RandomSP_NoShuffle_HypernetAF_Model
-
-
-class SRSNet_PSRS_NoShuffle_HypernetAF(_SelectivityControlsSRSNet):
-    """Learned select + aux descriptor head + identity shuffle + Hypernet alpha.
-
-    Same auxiliary-loss exposure as ``SRSNet_PSRS_HypernetAF``.
-    """
-
-    variant_name = "SRSNet_PSRS_NoShuffle_HypernetAF"
-    model_cls = SRSNet_PSRS_NoShuffle_HypernetAF_Model
-
-    def _process(self, input, target, input_mark, target_mark):
-        output = self.model(input)
-        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
-        out_loss = {"output": output}
-        if aux is not None and self.model.training:
-            out_loss["additional_loss"] = aux
-        return out_loss
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +531,7 @@ class _SRSNetWithEncoderModel(SRSNetModel):
 
 
 class _SelectivityControlsSRSNetEncoderModel(_SelectivityControlsSRSNetModel):
-    """Selectivity-controls model (TASP / HypernetAF / PSRS / ...) + Transformer Encoder.
+    """Selectivity-controls model (TASP / HypernetAF / ...) + Transformer Encoder.
 
     Combines the 'swap patch_embedding' machinery of
     ``_SelectivityControlsSRSNetModel`` with the Transformer Encoder addition
@@ -768,10 +569,6 @@ class SRSNet_HypernetAF_TransformerEncoder_Model(_SelectivityControlsSRSNetEncod
     embedding_cls = SRSHypernetAF
 
 
-class SRSNet_PSRS_TransformerEncoder_Model(_SelectivityControlsSRSNetEncoderModel):
-    embedding_cls = SRSPatternSupervised
-
-
 # --- TFB wrappers for the encoder variants -----------------------------------
 class SRSNet_TransformerEncoder(_SelectivityControlsSRSNet):
     """Baseline SRSNet + Transformer Encoder. Tests 'linear head is enough'."""
@@ -794,24 +591,6 @@ class SRSNet_HypernetAF_TransformerEncoder(_SelectivityControlsSRSNet):
     model_cls = SRSNet_HypernetAF_TransformerEncoder_Model
 
 
-class SRSNet_PSRS_TransformerEncoder(_SelectivityControlsSRSNet):
-    """PS-SRS aux loss + Transformer Encoder (combo across Select-aux x Backbone).
-
-    Same auxiliary-loss exposure as ``SRSNet_PSRS`` / ``SRSNet_PSRS_HypernetAF``.
-    """
-
-    variant_name = "SRSNet_PSRS_TransformerEncoder"
-    model_cls = SRSNet_PSRS_TransformerEncoder_Model
-
-    def _process(self, input, target, input_mark, target_mark):
-        output = self.model(input)
-        aux = getattr(self.model.patch_embedding, "last_aux_loss", None)
-        out_loss = {"output": output}
-        if aux is not None and self.model.training:
-            out_loss["additional_loss"] = aux
-        return out_loss
-
-
 # Backwards compatibility alias: the old broad-extensions code referenced
 # ``srs_paper.SRSNet_RandomSRS``.  Keep that name as an alias so any stale
 # tasks in older manifests still resolve, but emit no behaviour difference.
@@ -824,18 +603,14 @@ for _cls in (
     SRSNet_RandomSPRandomShuffle,
     SRSNet_TASP,
     SRSNet_HypernetAF,
-    SRSNet_PSRS,
     SRSNet_TASP_HypernetAF,
     SRSNet_RandomSP_HypernetAF,
-    SRSNet_PSRS_HypernetAF,
     SRSNet_TASP_NoShuffle_HypernetAF,
     SRSNet_RandomSP_NoShuffle_HypernetAF,
-    SRSNet_PSRS_NoShuffle_HypernetAF,
     # Backbone extension (Transformer Encoder)
     SRSNet_TransformerEncoder,
     SRSNet_TASP_TransformerEncoder,
     SRSNet_HypernetAF_TransformerEncoder,
-    SRSNet_PSRS_TransformerEncoder,
 ):
     _cls.MODEL_HYPER_PARAMS = MODEL_HYPER_PARAMS
 
@@ -848,33 +623,26 @@ __all__ = [
     # Layers -- constructive extensions
     "SRSTimeAware",
     "SRSHypernetAF",
-    "SRSPatternSupervised",
     # Layers -- factorial combinations (2-axis)
     "SRSTimeAware_HypernetAF",
     "SRSRandomSP_HypernetAF",
-    "SRSPatternSupervised_HypernetAF",
     # Layers -- 3-axis combinations (identity shuffle on top of 2-axis)
     "SRSTimeAware_NoShuffle_HypernetAF",
     "SRSRandomSP_NoShuffle_HypernetAF",
-    "SRSPatternSupervised_NoShuffle_HypernetAF",
     # Model wrappers
     "SRSNet_RandomSP",
     "SRSNet_RandomSPNoShuffle",
     "SRSNet_RandomSPRandomShuffle",
     "SRSNet_TASP",
     "SRSNet_HypernetAF",
-    "SRSNet_PSRS",
     "SRSNet_TASP_HypernetAF",
     "SRSNet_RandomSP_HypernetAF",
-    "SRSNet_PSRS_HypernetAF",
     "SRSNet_TASP_NoShuffle_HypernetAF",
     "SRSNet_RandomSP_NoShuffle_HypernetAF",
-    "SRSNet_PSRS_NoShuffle_HypernetAF",
     # Backbone extension (Transformer Encoder)
     "SRSNet_TransformerEncoder",
     "SRSNet_TASP_TransformerEncoder",
     "SRSNet_HypernetAF_TransformerEncoder",
-    "SRSNet_PSRS_TransformerEncoder",
     # Backwards-compat alias
     "SRSNet_RandomSRS",
 ]

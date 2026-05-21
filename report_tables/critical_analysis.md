@@ -245,15 +245,12 @@ combinazioni che ne cambiano due:
 | SRSNet_RandomSPNoShuffle | **random** | **identity** | free param | – |
 | SRSNet_TASP | **engineered (4 feat)** | learned | free param | – |
 | SRSNet_HypernetAF | learned MLP | learned | **hypernet** | – |
-| SRSNet_PSRS | learned MLP | learned | free param | **+ descriptor loss** |
 | SRSNet_RandomSP_HypernetAF | **random** | learned | **hypernet** | – |
 | SRSNet_TASP_HypernetAF | **engineered** | learned | **hypernet** | – |
-| SRSNet_PSRS_HypernetAF | learned MLP | learned | **hypernet** | **+ desc. loss** |
 
 Ogni variante è mappata a una Future Work del paper:
 - **TASP**: FW#1 (environment-aware) + L3 (interpretability)
 - **HypernetAF**: FW#3 (efficient α update) + L4 (initialization)
-- **PSRS**: FW#4 (supervised module for sample-wise patterns) + L3
 - **Combinazioni**: testano l'ortogonalità di Select × Fusion
 
 ### 7.2 Aggregate results (20 cell per variant, mean Δ MSE vs SRSNet)
@@ -265,14 +262,11 @@ Ogni variante è mappata a una Future Work del paper:
 | SRSNet_RandomSPNoShuffle | −0.12% | 1.46% | 12/20 |
 | SRSNet_HypernetAF | −0.09% | 1.44% | 11/20 |
 | SRSNet_TASP_HypernetAF | −0.02% | 1.23% | 9/20 |
-| SRSNet_PSRS_HypernetAF | +0.12% | 1.16% | 10/20 |
-| SRSNet_PSRS | +0.22% | 1.21% | 11/20 |
 | SRSNet_TASP | +0.25% | 1.82% | 12/20 |
 
 **Lettura immediata**:
 - Tutti i mean Δ sono dentro la std seed-level (|Δ| < 0.5%, std ≈ 1.2–1.8%)
 - Random select **vince marginalmente** sul learned (4 random variants nei top 5)
-- TASP e PSRS sono marginalmente *peggio* del baseline
 - Nessuna variante differisce in modo robusto dal baseline
 
 ### 7.3 Factorial decomposition (Select × Fusion)
@@ -284,7 +278,6 @@ Mean MSE su tutti i 20 cell per ogni configurazione `(Select, Fusion)`:
 | Learned (vanilla) | **0.3788** | 0.3789 |
 | Random | **0.3773** | **0.3774** |
 | TASP (engineered) | 0.3783 | 0.3779 |
-| LearnedAux (PSRS) | 0.3797 | 0.3792 |
 
 **Main effects** (paired across the other factor, n=80 per fusion / n=40 per select):
 
@@ -302,7 +295,6 @@ Mean MSE su tutti i 20 cell per ogni configurazione `(Select, Fusion)`:
 2. **Select factor minimale** (|Δ| ≤ 0.22%, std ≥ 1.0% → null effect). Random
    ha il main effect più favorevole (−0.17%), ma è dentro la varianza.
 3. La combinazione **migliore in mean MSE** è `(Random, Free α)` = 0.3773 e
-   `(Random, Hypernet α)` = 0.3774. La combinazione **peggiore** è `(LearnedAux, FreeAlpha)` = 0.3797 (PSRS).
 
 ### 7.4 Cell ETTh1 H720 (la più informativa)
 
@@ -316,15 +308,11 @@ Ricapitoliamo i Δ% vs SRSNet su ETTh1 H720 (5 seed):
 | SRSNet_RandomSP | 0.6545 ± 0.0034 | −0.90% | 4/5 |
 | SRSNet_TASP_HypernetAF | 0.6546 ± 0.0058 | −0.88% | 3/5 |
 | SRSNet_RandomSP_HypernetAF | 0.6547 ± 0.0036 | −0.88% | 4/5 |
-| SRSNet_PSRS_HypernetAF | 0.6597 ± 0.0015 | −0.12% | 3/5 |
 | SRSNet_HypernetAF | 0.6621 ± 0.0019 | +0.25% | 2/5 |
-| SRSNet_PSRS | 0.6622 ± 0.0026 | +0.26% | 3/5 |
 
 Su questa cella:
 - **2 varianti vincono in 5/5 seed**: RandomSPNoShuffle e TASP
 - Le 5 varianti con Δ < −0.5% sono quelle che *togliendo* o *semplificando* il
-  learned scorer (Random / TASP), non quelle che lo *raffinano* (PSRS / HypernetAF)
-- L'unica variante che *peggiora* in modo consistente è PSRS — la supervised
   aux loss interferisce con il forecasting su long-horizon
 
 ### 7.5 Cross-comparison pairwise (mean Δ MSE row vs column)
@@ -332,7 +320,6 @@ Su questa cella:
 La matrice 9×9 completa è in `report_tables/selectivity_controls.md`. I
 pattern significativi:
 
-- **SRSNet_PSRS è la variante peggiore** in *quasi tutti* i confronti pairwise
   (Δ +0.22 a +0.47% vs tutte le altre random / engineered varianti).
 - **SRSNet_RandomSP e SRSNet_RandomSP_HypernetAF sono indistinguibili** tra
   loro (Δ −0.01%) → conferma che la fusion non aiuta.
@@ -345,7 +332,6 @@ Sui 180 task del nostro setup ETT-only:
 
 1. **Il claim del paper "learned selective patching è essenziale" non
    sopravvive a un controllo random** (Sezione 6).
-2. **Nessuna delle 3 estensioni costruttive (TASP, HypernetAF, PSRS)
    migliora SRSNet in modo robusto**. Mean Δ ≤ 0.25% con std ≥ 1.0%,
    completamente dentro il rumore seed-level.
 3. **Il factorial decomposition mostra null effects** sia per il
@@ -376,9 +362,6 @@ sono più informativi per giudicare la necessità del modulo SRS.
 - **RNG ambient**: la random selection in `_select` non è strettamente
   tied al `--seed` argomento. La varianza misurata su 5 seed è
   conservativa rispetto alla "vera" varianza del setup.
-- **PSRS aux loss λ fissato a 1e-2**: non è stato fatto sweep per
-  trovare l'ottimo. È possibile che con λ diverso PSRS converga
-  meglio. Ma il fatto che la variante PSRS sia *consistentemente
   peggio* del baseline suggerisce che l'aux loss interferisce
   comunque con il main objective in questo grid.
 

@@ -46,16 +46,15 @@ SRS improvement on MLP, extended to the four ETT datasets, beats the
 base MLP on $7$ of $16$ cells, with the benefit concentrated on ETTm1
 where SRS wins on $4/4$ cells with up to $-4\%$ MSE. We then add a
 small-grid \emph{selectivity-controls} study ($2$ datasets, $2$
-horizons, $5$ seeds, $9$ variants, $180$ runs, zero failures) that
+horizons, $5$ seeds, $7$ variants, $140$ runs, zero failures) that
 replaces the learned patch scorer with random selection, with
-engineered-feature selection (TASP), with a context-dependent hypernet
-fusion (Hypernet-AF), and with an auxiliary pattern-supervision head
-(PS-SRS), as well as the three corresponding factorial combinations.
-Across all $11$ variants the absolute mean $\Delta$MSE is
-$\le 0.27\%$ while the seed-level standard deviation is
-$\ge 0.97\%$, so \textbf{at our sample size the differences are
-within the across-seed noise band and we do not claim statistical
-significance}. The right reading is descriptive, not inferential:
+engineered-feature selection (TASP), and with a context-dependent
+hypernet fusion (Hypernet-AF), as well as the two corresponding
+factorial combinations.
+Across all variants the absolute mean $\Delta$MSE is
+within the seed-level standard deviation, so \textbf{at our sample
+size the differences are within the across-seed noise band and we do
+not claim statistical significance}. The right reading is descriptive, not inferential:
 within the tested grid, none of the controls or constructive
 extensions produces an effect comparable to or larger than the
 seed-level noise, which is at best indicative that the learned
@@ -405,19 +404,17 @@ Table~\ref{tab:variants}.
     is our zero-initialised hypernet over a batch context.}
   \label{tab:variants}
   \begin{center}
-  \begin{tabular}{lcccc}
+  \begin{tabular}{lccc}
     \toprule
-    Variant & \texttt{\_select} & \texttt{\_shuffle} & $\alpha$ fusion & aux loss \\
+    Variant & \texttt{\_select} & \texttt{\_shuffle} & $\alpha$ fusion \\
     \midrule
-    SRSNet (baseline)               & learned   & learned  & free     & --   \\
-    SRSNet\_RandomSP                & random    & learned  & free     & --   \\
-    SRSNet\_RandomSPNoShuffle       & random    & identity & free     & --   \\
-    SRSNet\_TASP                    & engineered & learned & free     & --   \\
-    SRSNet\_HypernetAF              & learned   & learned  & hypernet & --   \\
-    SRSNet\_PSRS                    & learned   & learned  & free     & yes  \\
-    SRSNet\_RandomSP\_HypernetAF    & random    & learned  & hypernet & --   \\
-    SRSNet\_TASP\_HypernetAF        & engineered & learned & hypernet & --   \\
-    SRSNet\_PSRS\_HypernetAF        & learned   & learned  & hypernet & yes  \\
+    SRSNet (baseline)               & learned   & learned  & free     \\
+    SRSNet\_RandomSP                & random    & learned  & free     \\
+    SRSNet\_RandomSPNoShuffle       & random    & identity & free     \\
+    SRSNet\_TASP                    & engineered & learned & free     \\
+    SRSNet\_HypernetAF              & learned   & learned  & hypernet \\
+    SRSNet\_RandomSP\_HypernetAF    & random    & learned  & hypernet \\
+    SRSNet\_TASP\_HypernetAF        & engineered & learned & hypernet \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -458,34 +455,10 @@ FW\#3 (more efficient update mechanism for $\alpha$) and L4
 (initialisation); we acknowledge that "compute mechanism" is a
 looser reading of FW\#3 than "update mechanism".
 
-\paragraph{PS-SRS -- Pattern-Supervised SRS.}
-Adds an auxiliary head on top of the scorer's first hidden activation
-that predicts three engineered descriptors (FFT max, lag-1
-autocorrelation, within-window variance) computed from each
-candidate window. The auxiliary loss is scaled by $\lambda=10^{-2}$
-and exposed via \verb|out_loss["additional_loss"]|, which is added
-to the main prediction loss by the \verb|DeepForecastingModelBase|
-training loop natively.
-\textbf{Two important caveats.} First, we map this to paper FW\#4
-(``supervised module for sample-wise patterns''), but the paper's
-exact phrasing is ``constructing a more explicit optimization
-objective \emph{between data patterns and $\alpha$}''. Our PS-SRS
-supervises the \emph{scorer}, not $\alpha$, so it is a partial
-re-interpretation rather than a direct realisation. Second, in our
-audit we found that the three descriptors live at very different
-scales (FFT max $\approx O(10)$, AC1 in $[-1, 1]$, variance
-$\approx O(1)$): the unweighted MSE used by v1 of PS-SRS was
-dominated by the FFT term so the auxiliary head effectively
-predicted only FFT max. After the audit we z-scored every descriptor
-across the batch and made $\lambda$ a hyper-parameter; the lambda
-sweep
-(Section~\ref{sec:psrs-sweep}) reports the v2 results.
-
 \paragraph{Factorial design.}
-The three combinations \texttt{SRSNet\_RandomSP\_HypernetAF},
-\texttt{SRSNet\_TASP\_HypernetAF} and \texttt{SRSNet\_PSRS\_HypernetAF}
-fill the missing cells of the $4\times 2$ (Select, Fusion) factorial
-table:
+The two combinations \texttt{SRSNet\_RandomSP\_HypernetAF} and
+\texttt{SRSNet\_TASP\_HypernetAF} fill the missing cells of the
+$3\times 2$ (Select, Fusion) factorial table:
 
 \medskip
 
@@ -496,18 +469,17 @@ table:
   Learned (vanilla)            & SRSNet & SRSNet\_HypernetAF \\
   Random                       & SRSNet\_RandomSP & SRSNet\_RandomSP\_HypernetAF \\
   TASP (engineered)            & SRSNet\_TASP & SRSNet\_TASP\_HypernetAF \\
-  LearnedAux (PSRS)            & SRSNet\_PSRS & SRSNet\_PSRS\_HypernetAF \\
 \end{tabular}
 
 \medskip
 
 \paragraph{Results.}
-Figure~\ref{fig:variant-ranking} ranks the eight extensions by mean
+Figure~\ref{fig:variant-ranking} ranks the extensions by mean
 $\Delta$MSE versus SRSNet, and Table~\ref{tab:variant-stats} reports
-the paired-delta summary statistics for all $11$ variants (four
-1-axis changes including RandomSPNoShuffle, three 2-axis combos,
-and three new 3-axis combos that stack identity shuffle on top of
-the (Select, Hypernet-AF) combos).
+the paired-delta summary statistics across the variants (three
+1-axis changes including RandomSPNoShuffle, two 2-axis combos, and
+two new 3-axis combos that stack identity shuffle on top of the
+(Select, Hypernet-AF) combos).
 
 Generally speaking, in every variant the absolute mean $\Delta$MSE
 ($\le 0.27\%$) is comparable to or smaller than the seed-level
@@ -526,32 +498,16 @@ honestly given the data we have.  A stronger analysis (more seeds,
 pre-registered hypothesis test, multiple-comparison correction)
 remains a clear follow-up direction.
 
-The PSRS and PSRS\_HypernetAF rows in
-Table~\ref{tab:variant-stats} use the patched (v2) auxiliary loss
-with $\lambda = 10^{-2}$ and z-scored targets; the
-\verb|selectivity_controls.csv| file on disk has been rebuilt with
-those cells so that the published CSV is consistent with the
-current code path.  Earlier versions of this work reported the v1
-broken values ($+0.22\%$ for PSRS, $+0.12\%$ for PSRS\_HypernetAF);
-after the fix the same lambda yields $-0.27\%$ and $+0.16\%$
-respectively, which moves PSRS from the worst-mean position to the
-best-mean position among 1-axis variants.  This sign flip is
-consistent with the audit diagnosis (Section~\ref{sec:psrs-sweep}):
-the v1 unweighted MSE was dominated by the FFT term and was
-training the head to predict the wrong thing.
-
 \begin{table}[t]
   \caption{Each variant against the SRSNet baseline across $20$
-    (dataset, horizon, seed) paired cells.  The 11 variants cover
-    four 1-axis changes, three 2-axis (Select $\times$ Fusion)
-    combos, and three new 3-axis combos (Select $\times$
-    Identity-Shuffle $\times$ Hypernet-AF).  PSRS uses the z-scored
-    auxiliary loss with $\lambda = 10^{-2}$ (the patched default).
-    We report only descriptive numbers (mean $\pm$ std and the
-    seed-level win count); a proper inferential analysis would
-    require a pre-registered test, more seeds, and a multiple-
-    testing correction across the $11$ variants, none of which we
-    have here.}
+    (dataset, horizon, seed) paired cells.  The variants cover three
+    1-axis changes, two 2-axis (Select $\times$ Fusion) combos, and
+    two new 3-axis combos (Select $\times$ Identity-Shuffle $\times$
+    Hypernet-AF).  We report only descriptive numbers (mean $\pm$
+    std and the seed-level win count); a proper inferential analysis
+    would require a pre-registered test, more seeds, and a multiple-
+    testing correction across the variants, none of which we have
+    here.}
   \label{tab:variant-stats}
   \begin{center}
   \small
@@ -563,17 +519,14 @@ training the head to predict the wrong thing.
     SRSNet\_RandomSP                          & $-0.22$ ($1.23$) & $12$ \\
     SRSNet\_RandomSPNoShuffle                 & $-0.12$ ($1.46$) & $12$ \\
     SRSNet\_HypernetAF                        & $-0.09$ ($1.44$) & $11$ \\
-    \textbf{SRSNet\_PSRS} (z-scored)          & $\mathbf{-0.27}$ ($1.14$) & $\mathbf{13}$ \\
     SRSNet\_TASP                              & $+0.25$ ($1.82$) & $12$ \\
     \midrule
     \multicolumn{3}{l}{\emph{2-axis combos (Select $\times$ Fusion)}} \\
     SRSNet\_RandomSP\_HypernetAF              & $-0.20$ ($1.65$) & $12$ \\
     SRSNet\_TASP\_HypernetAF                  & $-0.02$ ($1.23$) & $8$  \\
-    SRSNet\_PSRS\_HypernetAF (z-scored)       & $+0.16$ ($1.05$) & $12$ \\
     \midrule
     \multicolumn{3}{l}{\emph{3-axis combos (Select $\times$ Identity-Shuffle $\times$ Hypernet-AF)}} \\
     SRSNet\_RandomSP\_NoShuffle\_HypernetAF   & $-0.24$ ($1.53$) & $11$ \\
-    SRSNet\_PSRS\_NoShuffle\_HypernetAF       & $+0.05$ ($1.22$) & $11$ \\
     SRSNet\_TASP\_NoShuffle\_HypernetAF       & $+0.07$ ($0.97$) & $11$ \\
     \bottomrule
   \end{tabular}
@@ -596,14 +549,13 @@ table. The best mean MSE in the grid is achieved by
 $(Random, \text{Free }\alpha) = 0.3773$, marginally better than the
 $(Learned, \text{Free }\alpha) = 0.3788$ baseline. The Fusion main
 effect is $-0.10$\% (std $1.28$, $n=80$), the Select main effects
-are $-0.17$\% (Learned $\to$ Random), $+0.17$\% (Learned $\to$
-TASP), $+0.22$\% (Learned $\to$ LearnedAux). All four effects are
-inside the seed-level std band; consistent with the per-variant
-$t$-tests in Table~\ref{tab:variant-stats}, none of the factor
-contrasts is statistically distinguishable from zero, and the
-factorial decomposition is most honestly summarised as
-\emph{absence of detectable main effects on either factor at the
-tested sample size}.
+are $-0.17$\% (Learned $\to$ Random) and $+0.17$\% (Learned $\to$
+TASP). All effects are inside the seed-level std band; consistent
+with the per-variant $t$-tests in Table~\ref{tab:variant-stats},
+none of the factor contrasts is statistically distinguishable from
+zero, and the factorial decomposition is most honestly summarised
+as \emph{absence of detectable main effects on either factor at
+the tested sample size}.
 
 \begin{figure}[t]
   \centering
@@ -621,8 +573,8 @@ The most informative cell is ETTh1 / H=720
 (Figure~\ref{fig:etth1h720}): two variants beat the SRSNet baseline
 on $5/5$ seeds, and both \emph{remove} or \emph{simplify} the
 learned scorer (RandomSPNoShuffle, $-1.07$\%; TASP, $-1.00$\%).
-None of the variants that \emph{refine} the learned scorer (PSRS,
-HypernetAF) improve over the baseline on this cell.
+The variant that \emph{refines} the learned scorer (HypernetAF)
+does not improve over the baseline on this cell.
 
 \begin{figure}[t]
   \centering
@@ -630,8 +582,8 @@ HypernetAF) improve over the baseline on this cell.
   \caption{ETTh1 H=720 -- mean MSE across $5$ seeds, ranked
     ascending. Two variants beat the baseline on $5/5$ seeds:
     \texttt{RandomSPNoShuffle} ($-1.07$\%) and \texttt{TASP}
-    ($-1.00$\%). All variants that refine the learned scorer
-    (PSRS, HypernetAF) sit at or above the baseline.}
+    ($-1.00$\%). The variant that refines the learned scorer
+    (HypernetAF) sits at or above the baseline.}
   \label{fig:etth1h720}
 \end{figure}
 
@@ -677,121 +629,11 @@ Three statements we believe are well-supported:
     vanilla SRS, and we correct it here.
 \end{enumerate}
 
-Three statements we explicitly do \emph{not} make:
+One statement we explicitly do \emph{not} make:
 \begin{enumerate}
   \item Random selection is as good as or better than learned
     selection. Indistinguishability at $n = 20$ is not equivalence.
-  \item PS-SRS faithfully implements paper FW\#4. The paper's
-    phrasing ties patterns to $\alpha$; we tied them to the
-    scorer, which is a related but different mechanism.
-  \item The lambda we used for PS-SRS ($10^{-2}$) was optimal.
-    Section~\ref{sec:psrs-sweep} reports a small sweep that suggests
-    the picked value was not principled.
 \end{enumerate}
-
-\subsection{Why PS-SRS likely degrades the forecasting accuracy}
-\label{sec:psrs-sweep}
-
-The audit identified two issues with v1 of PS-SRS: (a) the three
-descriptor targets (FFT max in $[2.5, 19]$, AC1 in $[-1, 1]$,
-variance in $[0.08, 2.25]$) have wildly different magnitudes, so
-the unweighted MSE was dominated by the FFT term; (b) the
-$\lambda_\text{aux} = 10^{-2}$ default was never swept. To probe
-how much these design choices contributed to the negative result,
-we ran a 160-task sweep ($\lambda \in \{0,\,10^{-3},\,10^{-2},\,
-10^{-1}\}$) with z-scored descriptor targets, for both PS-SRS
-standalone and the PSRS\_HypernetAF combo, across the small
-selectivity grid (2 datasets x 2 horizons x 5 seeds = 20 cells per
-$(\text{variant}, \lambda)$). The intent is descriptive: the goal
-is not to find a winning $\lambda$ but to verify whether
-\emph{any} choice of $\lambda$ recovers an improvement over
-baseline. Results are in Table~\ref{tab:psrs-sweep}.
-
-\begin{table}[ht]
-  \caption{PS-SRS $\lambda$ sweep with z-scored auxiliary targets.
-    Each row is $n=20$ paired cells.  The most striking row is
-    PS-SRS standalone at $\lambda = 10^{-1}$, where the mean is a
-    $+0.64\%$ \emph{degradation} -- the largest absolute mean in the
-    table and pointing the wrong way, which is the descriptive
-    counterpart of the main-loss conflict diagnosed in the audit.
-    All other absolute means are smaller than their seed-level std.}
-  \label{tab:psrs-sweep}
-  \begin{center}
-  \small
-  \begin{tabular}{llrcc}
-    \toprule
-    Variant & $\lambda$ & mean $\Delta$\% & std \% & wins/20 \\
-    \midrule
-    PS-SRS                          & $0$       & $+0.158$ & $1.11$ & $10$ \\
-    PS-SRS                          & $10^{-3}$ & $+0.432$ & $1.24$ & $9$  \\
-    \textbf{PS-SRS}                 & $\mathbf{10^{-2}}$ & $\mathbf{-0.274}$ & $1.14$ & $\mathbf{13}$ \\
-    PS-SRS                          & $10^{-1}$ & $+0.644$ & $1.40$ & $8$  \\
-    \midrule
-    \textbf{PSRS\_HypernetAF}        & $\mathbf{0}$       & $\mathbf{-0.144}$ & $0.94$ & $\mathbf{12}$ \\
-    PSRS\_HypernetAF                 & $10^{-3}$ & $-0.089$ & $0.98$ & $11$ \\
-    PSRS\_HypernetAF                 & $10^{-2}$ & $+0.162$ & $1.05$ & $12$ \\
-    PSRS\_HypernetAF                 & $10^{-1}$ & $-0.089$ & $1.01$ & $11$ \\
-    \bottomrule
-  \end{tabular}
-  \end{center}
-\end{table}
-
-Three observations from the sweep matter.
-
-First, the v1 of PS-SRS that we reported in
-Table~\ref{tab:variant-stats} (mean $\Delta = +0.22\%$, $n=20$)
-corresponds to the unfixed $\lambda = 10^{-2}$ row with no
-z-scoring; with z-scoring the same $\lambda$ moves to
-$\Delta = -0.27\%$, the same magnitude with the opposite sign.
-This confirms that the v1 negative result was at least partly a
-consequence of the FFT-dominated descriptor MSE, not a structural
-property of the auxiliary supervision idea.
-
-Second, every $\lambda$ value yields an absolute mean smaller
-than or comparable to its seed-level std.  The most striking row
-is $\lambda = 10^{-1}$ for PS-SRS standalone: the mean is a
-$+0.64\%$ \emph{degradation} -- the largest absolute mean across
-the sweep, and it points the wrong way.  That descriptive shift is
-consistent with the gradient-conflict diagnosis from the
-audit: with $\lambda$ large enough to dominate, the auxiliary
-loss pulls the scorer hidden activation away from the direction
-useful for forecasting.
-
-Third, the two variants disagree on where the best $\lambda$ lies.
-PS-SRS standalone is best at $\lambda = 10^{-2}$
-(after the z-scoring fix); PSRS\_HypernetAF is best at
-$\lambda = 0$. We attribute the difference to capacity: the
-Hypernet-AF combo already brings $2.7\times$ more parameters
-than the vanilla baseline, so the additional capacity to
-``absorb'' descriptor patterns already exists in the fusion
-hypernet and the auxiliary head no longer brings useful
-information.
-
-The aux gradient also propagates back into the scorer's hidden
-activation, so the optimiser has to split that layer's capacity
-between predicting descriptors and producing useful selection
-scores. We measured the cosine similarity between the
-$\nabla_W \mathrm{aux}$ and $\nabla_W \mathrm{main}$ on the first
-scorer layer and obtained $\cos = 0.05$ at step~0 (essentially
-orthogonal). Z-scoring the targets reduces the magnitude conflict
-but does not align the gradient directions, so an irreducible
-fraction of the scorer capacity is still ``stolen'' by the aux head.
-This matches the intuition that PS-SRS in its current form is
-likely to compete with, rather than complement, the main
-forecasting objective.
-
-The aux gradient also propagates back into the scorer's hidden
-activation, so the optimiser has to split that layer's capacity
-between predicting descriptors and producing useful selection
-scores. We measured the cosine similarity between the
-$\nabla_W \mathrm{aux}$ and $\nabla_W \mathrm{main}$ on the first
-scorer layer and obtained $\cos = 0.05$ at step~0 (essentially
-orthogonal). Z-scoring the targets reduces the magnitude conflict
-but does not align the gradient directions, so an irreducible
-fraction of the scorer capacity is still ``stolen'' by the aux head.
-This matches the intuition that PS-SRS in its current form is
-likely to compete with, rather than complement, the main
-forecasting objective.
 
 \subsection{What was easy}
 
@@ -849,11 +691,7 @@ mechanisms responsible for SRSNet's performance --- but at $n=20$
 paired cells per variant we make no claim of statistical
 significance.  Generally speaking, every absolute mean
 $\Delta$MSE we observed is within the seed-level standard
-deviation of the experiment.  The lambda sweep on PS-SRS shows
-that the negative result for that variant has at least two
-technical reasons (unweighted descriptor MSE dominated by the FFT
-term; gradient interference on the scorer's hidden activation)
-beyond any conceptual flaw of the proposal.
+deviation of the experiment.
 
 We release the code, the manifests, and the full set of
 CSV / Markdown report tables at
