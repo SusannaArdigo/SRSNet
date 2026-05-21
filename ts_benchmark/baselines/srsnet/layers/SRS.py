@@ -55,16 +55,59 @@ class SRS(nn.Module):
     Paper equations are referenced inline (e.g. `# eq. 2:`) right above each
     implementation line.
 
-    Notation used throughout:
-        B = batch
-        N = channels
-        T = lookback length            (input window length)
-        T_pad = T + padding            (after right-padding)
-        p = patch_len
-        s = stride
-        n = patch_num                  (adjacent patches after padding)
-        K = (n - 1) * s + 1            (candidate patches with stride=1)
-        d = d_model                    (embedding dimension)
+    Notation used throughout
+    ========================
+
+    Shape symbols (sizes/scalars)
+        B          batch size
+        N          number of channels
+        T          lookback length (input window length)
+        T_pad      = T + padding             (after right-padding)
+        padding    = p + (n - 1) * s - T     (samples appended on the right)
+        L          forecast horizon
+        p          patch length              (= patch_len)
+        s          stride between adjacent patches
+        n          number of adjacent patches  = ceil((T - p) / s) + 1   (= patch_num)
+        K          number of stride=1 candidate patches  = (n - 1) * s + 1
+        d          embedding dimension       (= d_model)
+        h          scorer hidden size
+        max_len    upper bound used to precompute sinusoidal PE (5000 by default)
+
+    Input / intermediate / output tensors
+        X          input lookback             [B, N, T]            (RevIN-normalized upstream)
+        X'         right-padded X             [B, N, T_pad]
+        P          original view: adjacent patches with stride s   [B*N, n, p]
+        P'         all K stride=1 candidate patches                [B, N, K, p]
+        P~^s_max   the n selected candidates (output of _select)   [B, N, n, p]
+        P~         P~^s_max reordered by _shuffle                  [B*N, n, p]
+        E^c        PatchEmbedding^1(P)                             [B*N, n, d]
+        E^s_emb    PatchEmbedding^2(P~)                            [B*N, n, d]
+        E~         alpha * E^c + (1 - alpha) * E^s_emb              [B*N, n, d]
+        E          E~ + sinusoidal PositionEmbedding(P)            [B*N, n, d]   (returned)
+
+    Learned modules (paper symbol -> code attribute)
+        Scorer^s          self.scorer_select         MLP: p -> hidden -> n   (eq. 1)
+        Scorer^r          self.scorer_shuffle        MLP: p -> hidden -> 1   (eq. 6)
+        PatchEmbedding^1  self.value_embedding_org   Linear: p -> d          (eq. 11)
+        PatchEmbedding^2  self.value_embedding_rec   Linear: p -> d          (eq. 11)
+        PositionEmbedding self.position_embedding    sinusoidal (Vaswani)    (eq. 14)
+        alpha             self.alpha (Parameter)     learned fusion weight   [n, d]   (eq. 13)
+
+    Selective Patching intermediates (eq. 1-5, used inside _select)
+        S^s        Scorer^s(P')                                    [B, N, K, n]
+        I^s        Argmax_K(S^s)                                   [B, N, 1, n]
+        S^s_max    S^s[I^s]                                        [B, N, 1, n]
+        S^s_inv    detach(1 / S^s_max)                             flat (no grad)
+        P^s_max    P'[I^s]                                         [B, N, n, p]
+        E^s        S^s_max * S^s_inv   (= 1 numerically, grad alive; STE bridge)
+
+    Dynamic Reassembly intermediates (eq. 6-10, used inside _shuffle)
+        S^r        Scorer^r(P~^s_max)                              [B, N, n, 1]
+        I^r        Argsort_n(S^r)                                  [B, N, n, 1]
+        S^r_sort   S^r[I^r]                                        [B, N, n, 1]
+        S^r_inv    detach(1 / S^r_sort)                            flat (no grad)
+        P^r_sort   P~^s_max[I^r]                                   [B, N, n, p]
+        E^r        S^r_sort * S^r_inv   (STE bridge for reorder)
     """
 
     def __init__(self, d_model, patch_len, stride, seq_len, dropout, hidden_size, alpha=2.0, pos=True):
@@ -83,48 +126,48 @@ class SRS(nn.Module):
         """
         super(SRS, self).__init__()
 
-        # ---- Patching geometry (p, s, T -> n and the right-padding amount) ----
+        # Patching geometry: from p, s, T derive n and the right-padding amount.
         self.patch_len = patch_len                                                 # p
         self.stride = stride                                                       # s
         self.seq_len = seq_len                                                     # T
-        # n  = number of adjacent patches once we right-pad X to fit cleanly.
+        # n = number of adjacent patches once we right-pad X to fit cleanly.
         self.patch_num = math.ceil((self.seq_len - self.patch_len) / self.stride) + 1
         # padding = how many samples to append so the last patch fits exactly.
         self.padding = self.patch_len + (self.patch_num - 1) * self.stride - self.seq_len
         # ReplicationPad1d repeats the last value (paper-compatible).
         self.padding_patch_layer = nn.ReplicationPad1d((0, self.padding))           # X -> X'  [B, N, T] -> [B, N, T_pad]
 
-        # ---- Scorer^s (Selective Patching, eq. 1) ----
-        # Maps each candidate (K of them) to n scores -> argmax over K picks the winner per slot.
+        # Scorer^s (Selective Patching, eq. 1): for each candidate produce n scores,
+        # so argmax over K picks the winner per output slot.
         self.scorer_select = nn.Sequential(                                         # Scorer^s   [B, N, K, p] -> [B, N, K, n]
-            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                      # p -> hidden
-            nn.Linear(hidden_size, self.patch_num),                                 # hidden -> n
+            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                      # p -> h
+            nn.Linear(hidden_size, self.patch_num),                                 # h -> n
         )
 
-        # ---- Scorer^r (Dynamic Reassembly, eq. 6) ----
-        # Maps each of the n selected patches to a single score -> argsort gives the new order.
+        # Scorer^r (Dynamic Reassembly, eq. 6): one score per selected patch,
+        # argsort over n gives the new order.
         self.scorer_shuffle = nn.Sequential(                                        # Scorer^r   [B, N, n, p] -> [B, N, n, 1]
-            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                      # p -> hidden
-            nn.Linear(hidden_size, 1),                                              # hidden -> 1
+            nn.Linear(self.patch_len, hidden_size), nn.ReLU(),                      # p -> h
+            nn.Linear(hidden_size, 1),                                              # h -> 1
         )
 
-        # ---- PatchEmbedding^1 and ^2 (eq. 11+12): two parallel projections ----
-        # One per view (original P / reconstructive P~), so Adaptive Fusion has
-        # something to combine.
-        self.value_embedding_org = nn.Linear(patch_len, d_model, bias=False)        # PatchEmbedding^1   p -> d_model
-        self.value_embedding_rec = nn.Linear(patch_len, d_model, bias=False)        # PatchEmbedding^2   p -> d_model
+        # PatchEmbedding^1 and PatchEmbedding^2 (eq. 11+12): two parallel projections,
+        # one per view (original P / reconstructive P~), so Adaptive Fusion has two
+        # embeddings to combine.
+        self.value_embedding_org = nn.Linear(patch_len, d_model, bias=False)        # PatchEmbedding^1   p -> d
+        self.value_embedding_rec = nn.Linear(patch_len, d_model, bias=False)        # PatchEmbedding^2   p -> d
 
-        # ---- Sinusoidal positional embedding (eq. 14) ----
+        # Sinusoidal positional embedding (eq. 14).
         if pos:
-            self.position_embedding = PositionalEmbedding(d_model)                  # PE buffer  [1, max_len, d_model]
+            self.position_embedding = PositionalEmbedding(d_model)                  # PE buffer  [1, max_len, d]
         self.pos = pos
 
-        # ---- Final dropout (not in paper, standard regularization) ----
+        # Final dropout on the fused embedding (not in paper, standard regularization).
         self.dropout = nn.Dropout(dropout)
 
-        # ---- alpha (Adaptive Fusion weight, eq. 13) ----
+        # alpha (Adaptive Fusion weight, eq. 13).
         # Init at 2.0 -> sigmoid(2.0) ~ 0.88: at step 0 the model trusts P (original view).
-        self.alpha = nn.Parameter(torch.ones(self.patch_num, d_model) * alpha)      # alpha   [n, d_model]
+        self.alpha = nn.Parameter(torch.ones(self.patch_num, d_model) * alpha)      # alpha   [n, d]
 
     def _origin_view(self, x):
         """Conventional adjacent patching (paper Sec. 3.1): produces P.

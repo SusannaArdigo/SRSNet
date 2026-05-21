@@ -3,34 +3,29 @@ import torch.nn as nn
 
 
 class RevIN(nn.Module):
-    """
-    Reversible Instance Normalization (Kim et al., ICLR 2022).
+    """Reversible Instance Normalization (Kim et al., ICLR 2022).
 
     Normalizes each (sample, channel) along the time axis BEFORE the model,
     then puts back mean + std (and optional learned affine) AFTER the model.
     Mitigates train/test distribution shift in time series forecasting.
 
-    -----------------------------------------------------------------------
-    The idea (in two lines):
+    Idea in two lines:
         Strip away non-stationarity BEFORE the model. Put it back AFTER.
 
     Step by step:
-        1. For each sample in the batch and each channel, compute mean and
-           stdev along the time axis.
-        2. Subtract the mean and divide by the stdev -> every sample now
+        1. For each sample and channel, compute mean and stdev along time.
+        2. Subtract the mean and divide by the stdev -> every (sample, channel)
            has mean 0 and std 1.
-        3. The model sees data on a uniform scale -> it focuses on the
-           SHAPE of the signal, not on the absolute magnitude.
+        3. The model sees data on a uniform scale and focuses on the SHAPE
+           of the signal, not on the absolute magnitude.
         4. When the model outputs a prediction (still in normalized scale),
-           multiply by the SAME stdev and add the SAME mean -> the
-           prediction goes back to the original scale.
+           multiply by the SAME stdev and add the SAME mean -> the prediction
+           goes back to the original scale.
 
     The "Reversible" in the name comes from this: the transformation is
-    invertible, and we save the statistics between `norm` and `denorm`.
+    invertible and we save the statistics between `norm` and `denorm`.
 
-    -----------------------------------------------------------------------
     Numeric walkthrough (B=2, T=5, C=1, temperature in degrees C):
-
         Input:
             Sample 1: [22, 24, 26, 28, 30]
             Sample 2: [25, 27, 28, 29, 31]
@@ -52,6 +47,27 @@ class RevIN(nn.Module):
             Sample 1: [2.12, 2.83] * 2.83 + 26.0 ~ [32.0, 34.0]
             Sample 2: [1.91, 2.39] * 2.10 + 28.0 ~ [32.0, 33.0]
             The output is back in degrees C, ready to be read by a human.
+
+    Notation used throughout
+    ========================
+
+    Shape symbols
+        B          batch size
+        T          number of timesteps (lookback or horizon, depending on call)
+        C          number of channels    (= num_features)
+
+    Tensors
+        x          the input/output tensor                     [B, T, C]
+        mean       per-(sample, channel) mean along T          [B, 1, C]
+        stdev      per-(sample, channel) std along T           [B, 1, C]
+        last       per-(sample, channel) last timestep value   [B, 1, C]   (only if subtract_last=True)
+
+    Learned parameters (paper symbol -> code attribute)
+        gamma     self.affine_weight   per-channel scale       [C]   init at 1   (created only if affine=True)
+        beta      self.affine_bias     per-channel bias        [C]   init at 0   (created only if affine=True)
+
+    Constants
+        eps        small additive constant inside sqrt(var + eps) for numerical stability
     """
 
     def __init__(self, num_features: int, eps=1e-5, affine=True, subtract_last=False):

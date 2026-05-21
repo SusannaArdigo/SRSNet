@@ -8,107 +8,158 @@ from ts_benchmark.baselines.srsnet.layers.RevIN import RevIN
 
 
 class FlattenHead(nn.Module):
-    """Forecasting head (paper Sec. 4, eq. 15-16): flatten the (d, n) block and project to L."""
+    """Forecasting head (paper Sec. 4, eq. 15-16): flatten the (d, n) block and project to L.
+
+    Notation used throughout
+    ========================
+
+    Shape symbols
+        B            batch size
+        N            number of channels                       (= n_vars)
+        n            number of patches                        (= patch_num)
+        d            embedding dimension                      (= d_model)
+        L            forecast horizon                         (= target_window)
+        nf           = d * n                                  (flat size after collapse)
+
+    Tensors
+        x            input embedding block                    [B, N, d, n]   (from SRS)
+        Flatten(x)   d and n collapsed into a single axis     [B, N, n*d]
+        MLP(...)     one-shot linear projection to horizon    [B, N, L]
+
+    Learned modules
+        Flatten      nn.Flatten(start_dim=-2)                 (eq. 15 part 1)
+        MLP          Linear(nf -> L) or 2-layer SiLU MLP      (eq. 15 part 2)
+    """
 
     def __init__(self, n_vars, nf, target_window, head_dropout=0, mode='linear'):
         """
-        n_vars:        number of channels (N)
-        nf:            d_model * patch_num (size after flatten)
-        target_window: horizon L (number of future steps to predict)
-        head_dropout:  dropout on the head output
-        mode:          'linear' = single Linear, anything else = 2-layer MLP
+        n_vars:        number of channels N
+        nf:            d * n  (size after Flatten)
+        target_window: forecast horizon L
+        head_dropout:  dropout probability applied on the head output
+        mode:          'linear'  -> single Linear(nf -> L)
+                       anything  -> 2-layer MLP nf -> nf/2 -> L  with SiLU
         """
         super().__init__()
         self.n_vars = n_vars
 
-        # eq. 15:  Flatten := R^(N x n x d) -> R^(N x (n·d))
-        self.flatten = nn.Flatten(start_dim=-2)                                                     # [..., d, n] -> [..., d·n]  -- collapse last two dims
+        # eq. 15:  Flatten : R^(N x n x d) -> R^(N x (n*d))
+        self.flatten = nn.Flatten(start_dim=-2)                                                     # collapse the last two axes
 
-        # eq. 15:  MLP := R^(N x (n·d)) -> R^(N x L)
+        # eq. 15:  MLP : R^(N x (n*d)) -> R^(N x L)
         if mode == 'linear':
-            self.head = nn.Linear(nf, target_window)                                                # [..., n·d] -> [..., L]     -- one-shot linear regression
+            self.head = nn.Linear(nf, target_window)                                                # one-shot linear projection
         else:
-            # 2-layer MLP variant: nf -> nf/2 -> L  with SiLU activation
+            # 2-layer SiLU variant: nf -> nf/2 -> L
             self.head = nn.Sequential(nn.Linear(nf, nf // 2), nn.SiLU(), nn.Linear(nf // 2, target_window))
 
-        self.dropout = nn.Dropout(head_dropout)                                                     # float prob   -- no shape change
+        self.dropout = nn.Dropout(head_dropout)                                                     # float prob, no shape change
 
     def forward(self, x):
-        # x: [B, n_vars, d_model, patch_num]
-        # eq. 16 part 1:  Flatten(E)
-        x = self.flatten(x)                                                                         # [B, n_vars, d_model·patch_num]  -- flatten (d, n) -> (d·n)
-        # eq. 16 part 2:  MLP(Flatten(E))
-        x = self.head(x)                                                                            # [B, n_vars, L]                  -- project to the horizon
-        x = self.dropout(x)                                                                         # [B, n_vars, L]                  -- regularization
+        # x  [B, N, d, n]   from SRS (after the reshape + permute in SRSNetModel)
+
+        # eq. 16 (Flatten part):  collapse (d, n) -> d*n
+        x = self.flatten(x)                                                                         # [B, N, n*d]
+
+        # eq. 16 (MLP part):  Y_norm = MLP(Flatten(E))   (one-shot horizon)
+        x = self.head(x)                                                                            # [B, N, L]
+
+        x = self.dropout(x)                                                                         # [B, N, L]   regularization
         return x
 
 
 class SRSNetModel(nn.Module):
-    """
-    The actual nn.Module of SRSNet:  RevIN  ->  SRS  ->  FlattenHead  ->  RevIN^{-1}.
+    """The actual nn.Module of SRSNet:  RevIN -> SRS -> FlattenHead -> RevIN^{-1}.
 
     Wrapped by the TFB-facing SRSNet class (srsnet.py). The SRS block is the
     paper's Selective Representation Space; RevIN is the Instance Normalization
-    that Sec. 3.1 of the paper mentions ('first processed through Instance
-    Normalization to mitigate the statistical differences between training and
-    testing parts').
+    that Sec. 3.1 of the paper mentions ("first processed through Instance
+    Normalization to mitigate the statistical differences between training
+    and testing parts"); FlattenHead is the simple linear/MLP head from Sec. 4.
+
+    Notation used throughout
+    ========================
+
+    Shape symbols (sizes/scalars)
+        B          batch size
+        N          number of channels        (= config.enc_in)
+        T          lookback length           (= config.seq_len)
+        L          forecast horizon          (= config.pred_len)
+        p          patch length              (= config.patch_len)
+        s          stride                    (= config.stride)
+        n          number of patches         = ceil((T - p) / s) + 1
+        d          embedding dimension       (= config.d_model)
+        nf         = d * n                   (Flatten output size)
+
+    Tensor flow inside forward(x_enc)
+        x_enc    [B, T, N]   TFB input convention
+                 -> RevIN('norm')         [B, T, N]   centered, unit-std per (sample, channel)
+                 -> permute(0, 2, 1)      [B, N, T]   channel-first for SRS
+                 -> SRS                   [B*N, n, d] n patch embeddings per (sample, channel)
+                 -> reshape + permute     [B, N, d, n]
+                 -> FlattenHead           [B, N, L]   forecast still in normalized scale
+                 -> permute(0, 2, 1)      [B, L, N]
+                 -> RevIN('denorm')       [B, L, N]   back to original scale (returned)
+
+    Sub-modules
+        self.patch_embedding   SRS module     (paper Sec. 3.2-3.4)
+        self.head              FlattenHead    (paper Sec. 4, eq. 15-16)
+        self.revin             RevIN          (paper Sec. 3.1)
     """
 
     def __init__(self, config):
-        """
-        config exposes the paper-faithful hyperparameters:
-            seq_len, pred_len, patch_len, stride, d_model, dropout, hidden_size,
-            alpha, pos, enc_in, affine, subtract_last, head_mode
+        """Build SRS + FlattenHead + RevIN from the merged TFB config.
+
+        config exposes the paper-faithful hyper-parameters:
+            seq_len, pred_len, patch_len, stride, d_model, dropout,
+            hidden_size, alpha, pos, enc_in, affine, subtract_last, head_mode
         """
         super(SRSNetModel, self).__init__()
-        self.seq_len = config.seq_len                                                               # T: lookback window
-        self.pred_len = config.pred_len                                                             # L: forecast horizon
-        self.patch_len = config.patch_len                                                           # p: patch length
-        self.stride = config.stride                                                                 # s: patch stride
+        self.seq_len = config.seq_len                                                               # T
+        self.pred_len = config.pred_len                                                             # L
+        self.patch_len = config.patch_len                                                           # p
+        self.stride = config.stride                                                                 # s
 
-        # --- The SRS block (Selective + Reassembly + Adaptive Fusion) --------
+        # SRS module (Selective Patching + Dynamic Reassembly + Adaptive Fusion).
         self.patch_embedding = SRS(
             config.d_model, self.patch_len, self.stride, self.seq_len,
             config.dropout, config.hidden_size, config.alpha, config.pos
         )
 
-        # --- Forecasting head ------------------------------------------------
-        # After SRS we have [B, N, patch_num, d_model] -> flatten (d_model * patch_num) -> project to L
-        self.head_nf = config.d_model * (math.ceil((config.seq_len - self.patch_len) / self.stride) + 1)  # nf = d_model * patch_num
+        # Forecasting head (eq. 15-16): nf = d * n -> L.
+        self.head_nf = config.d_model * (math.ceil((config.seq_len - self.patch_len) / self.stride) + 1)
         self.head = FlattenHead(
             config.enc_in,
             self.head_nf,
             config.pred_len,
             head_dropout=config.dropout,
-            mode=config.head_mode
+            mode=config.head_mode,
         )
 
-        # --- Instance Normalization (RevIN, paper Sec. 3.1) -----------------
+        # Instance Normalization (RevIN, paper Sec. 3.1).
         self.revin = RevIN(num_features=config.enc_in, affine=config.affine, subtract_last=config.subtract_last)
 
     def forward(self, x_enc):
-        # x_enc: [B, T, N]  -- this is the convention TFB uses for input
+        # x_enc  [B, T, N]   TFB convention
 
-        # --- 1) Normalize per-instance, per-channel  (paper Sec. 3.1) -------
-        x_enc = self.revin(x_enc, 'norm')                                                           # [B, T, N], mean=0 / std=1 per channel
+        # Sec. 3.1:  RevIN normalization (mean=0, std=1 per sample-channel).
+        x_enc = self.revin(x_enc, 'norm')                                                           # [B, T, N]
 
-        # --- 2) Move channel axis next to batch  (SRS expects [B, N, T]) ---
+        # Move the channel axis next to batch (SRS expects channel-first).
         x_enc = x_enc.permute(0, 2, 1)                                                              # [B, N, T]
 
-        # --- 3) Apply the SRS block (encoder) -------------------------------
-        enc_out, n_vars = self.patch_embedding(x_enc)                                               # [B*N, patch_num, d_model]
+        # Sec. 3.2-3.4:  SRS produces n patch embeddings per (sample, channel).
+        enc_out, n_vars = self.patch_embedding(x_enc)                                               # [B*N, n, d]
 
-        # --- 4) Split batch and channel back apart --------------------------
-        enc_out = torch.reshape(
-            enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1])
-        )                                                                                           # [B, N, patch_num, d_model]
-        # FlattenHead wants the d_model axis next to patch_num
-        enc_out = enc_out.permute(0, 1, 3, 2)                                                       # [B, N, d_model, patch_num]
+        # Split B*N back into B and N for the head.
+        enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))        # [B, N, n, d]
+        # FlattenHead expects d before n.
+        enc_out = enc_out.permute(0, 1, 3, 2)                                                       # [B, N, d, n]
 
-        # --- 5) Forecasting head -------------------------------------------
+        # Sec. 4 eq. 15-16:  Y_norm = MLP(Flatten(E)).
         dec_out = self.head(enc_out)                                                                # [B, N, L]
-        dec_out = dec_out.permute(0, 2, 1)                                                          # [B, L, N]  (back to TFB convention)
+        dec_out = dec_out.permute(0, 2, 1)                                                          # [B, L, N]   back to TFB convention
 
-        # --- 6) De-normalize so the output is in the original scale --------
+        # Sec. 3.1:  RevIN denormalization (back to original scale).
         dec_out = self.revin(dec_out, 'denorm')                                                     # [B, L, N]
         return dec_out
