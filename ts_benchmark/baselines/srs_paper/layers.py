@@ -1,3 +1,13 @@
+"""SRS layer variants used by the paper's ablation study (Tab.4) and plug-ins (Tab.3).
+
+Five classes:
+  - SRSNoSRS                  : NoSRS row -- skip SRS entirely (adjacent only)
+  - SRSNoSelectivePatching    : NoSP row  -- keep shuffle, drop selection
+  - SRSNoDynamicReassembly    : NoDR row  -- keep selection, drop shuffle
+  - SRSNoAdaptiveFusion       : NoAF row  -- replace learned alpha with 50/50
+  - SRSAsPatchEmbedding       : adapter that exposes SRS as a TSLib-style
+                                PatchEmbedding for plug-in studies (Tab.3)
+"""
 import math
 
 import torch
@@ -8,44 +18,45 @@ from ts_benchmark.baselines.srsnet.layers.SRS import PositionalEmbedding, SRS
 
 
 class SRSNoSRS(SRS):
-    """Adjacent patch embedding with the SRS module removed."""
+    """NoSRS ablation: only the adjacent (conventional) view, no SRS module."""
 
     def forward(self, x):
         n_vars = x.shape[1]
-        x = self.padding_patch_layer(x)
-        original_repr_space = self._origin_view(x)
-        embedding = self.value_embedding_org(original_repr_space)
+        x = self.padding_patch_layer(x)                          # [B, N, T_padded]
+        original_repr_space = self._origin_view(x)               # adjacent patches only
+        embedding = self.value_embedding_org(original_repr_space)# PatchEmbedding^1, no fusion
         if self.pos:
             embedding = embedding + self.position_embedding(original_repr_space)
         return self.dropout(embedding), n_vars
 
 
 class SRSNoSelectivePatching(SRS):
-    """Disable selective patching while keeping dynamic reassembly."""
+    """NoSP ablation: skip _select; only _shuffle on the adjacent patches."""
 
     def _rec_view(self, x):
-        original = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        shuffled_patches = self._shuffle(original)
+        original = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)  # adjacent unfold
+        shuffled_patches = self._shuffle(original)                                # learned reorder only
         return rearrange(shuffled_patches, "b c n p -> (b c) n p")
 
 
 class SRSNoDynamicReassembly(SRS):
-    """Disable dynamic reassembly while keeping selective patching."""
+    """NoDR ablation: keep _select; identity _shuffle (no reordering)."""
 
     def _rec_view(self, x):
-        x_rec = x.unfold(dimension=-1, size=self.patch_len, step=1)
-        selected_patches = self._select(x_rec)
+        x_rec = x.unfold(dimension=-1, size=self.patch_len, step=1)   # all candidates
+        selected_patches = self._select(x_rec)                        # learned selection only
         return rearrange(selected_patches, "b c n p -> (b c) n p")
 
 
 class SRSNoAdaptiveFusion(SRS):
-    """Replace learnable fusion with a fixed 50/50 original/reassembled mix."""
+    """NoAF ablation: drop the learned alpha; fuse the two views 50/50."""
 
     def forward(self, x):
         n_vars = x.shape[1]
         x = self.padding_patch_layer(x)
-        rec_repr_space = self._rec_view(x)
-        original_repr_space = self._origin_view(x)
+        rec_repr_space = self._rec_view(x)                          # P~ (selective + shuffle)
+        original_repr_space = self._origin_view(x)                  # P (adjacent)
+        # fixed-weight fusion instead of sigmoid(alpha): isolates the contribution of learned alpha
         embedding = 0.5 * self.value_embedding_org(original_repr_space)
         embedding = embedding + 0.5 * self.value_embedding_rec(rec_repr_space)
         if self.pos:
@@ -54,7 +65,12 @@ class SRSNoAdaptiveFusion(SRS):
 
 
 class SRSAsPatchEmbedding(nn.Module):
-    """SRS replacement for TSLib PatchEmbedding-compatible modules."""
+    """SRS exposed as a TSLib-style PatchEmbedding for plug-in studies (paper Tab.3).
+
+    Unlike the regular ``SRS`` class, this one defers scorer/alpha creation
+    to the first forward (``_ensure_shape``) because plug-in host backbones
+    decide patch_num based on their own padding choice.
+    """
 
     def __init__(
         self,
@@ -88,23 +104,25 @@ class SRSAsPatchEmbedding(nn.Module):
             self._ensure_shape(patch_count(seq_len, patch_len, stride, padding), torch.device("cpu"))
 
     def _ensure_shape(self, patch_num, device):
+        """Lazily create scorer/alpha sized for the host backbone's patch_num."""
         if self.patch_num == patch_num:
             return
         self.patch_num = patch_num
-        self.scorer_select = nn.Sequential(
+        self.scorer_select = nn.Sequential(                                # Scorer^s (eq. 1)
             nn.Linear(self.patch_len, self.hidden_size),
             nn.ReLU(),
             nn.Linear(self.hidden_size, patch_num),
         ).to(device)
-        self.scorer_shuffle = nn.Sequential(
+        self.scorer_shuffle = nn.Sequential(                               # Scorer^r (eq. 6)
             nn.Linear(self.patch_len, self.hidden_size),
             nn.ReLU(),
             nn.Linear(self.hidden_size, 1),
         ).to(device)
         alpha = torch.ones(patch_num, self.value_embedding_org.out_features, device=device)
-        self.alpha = nn.Parameter(alpha * self.alpha_init)
+        self.alpha = nn.Parameter(alpha * self.alpha_init)                 # learned fusion weight (eq. 13)
 
     def _select(self, x_rec):
+        """Same straight-through select as the original SRS class (eq. 1-5)."""
         scores = self.scorer_select(x_rec)
         indices = torch.argmax(scores, dim=-2, keepdim=True)
         max_scores = torch.gather(input=scores, dim=-2, index=indices)
@@ -116,6 +134,7 @@ class SRSAsPatchEmbedding(nn.Module):
         return max_scores.permute(0, 1, 3, 2) * selected_patches
 
     def _shuffle(self, selected_patches):
+        """Same straight-through shuffle as the original SRS class (eq. 6-10)."""
         shuffle_scores = self.scorer_shuffle(selected_patches)
         shuffle_indices = torch.argsort(input=shuffle_scores, dim=-2, descending=True)
         shuffled_scores = torch.gather(input=shuffle_scores, index=shuffle_indices, dim=-2)
@@ -129,13 +148,14 @@ class SRSAsPatchEmbedding(nn.Module):
     def forward(self, x):
         n_vars = x.shape[1]
         x = self.padding_patch_layer(x)
-        original = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
+        original = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)   # adjacent view
         patch_num = original.shape[-2]
-        self._ensure_shape(patch_num, x.device)
-        candidates = x.unfold(dimension=-1, size=self.patch_len, step=1)
-        rec = self._shuffle(self._select(candidates))
+        self._ensure_shape(patch_num, x.device)                                    # lazy scorer init
+        candidates = x.unfold(dimension=-1, size=self.patch_len, step=1)           # all candidates (stride=1)
+        rec = self._shuffle(self._select(candidates))                              # selective + reassembled view
         original = rearrange(original, "b c n p -> (b c) n p")
         rec = rearrange(rec, "b c n p -> (b c) n p")
+        # Adaptive Fusion (eq. 13) on the two views, then position embedding (eq. 14).
         weight = torch.sigmoid(self.alpha)
         embedding = weight * self.value_embedding_org(original)
         embedding = embedding + (1 - weight) * self.value_embedding_rec(rec)
@@ -145,4 +165,5 @@ class SRSAsPatchEmbedding(nn.Module):
 
 
 def patch_count(seq_len, patch_len, stride, padding=0):
+    """Compute how many patches a (seq_len, patch_len, stride, padding) config produces."""
     return math.floor((seq_len + padding - patch_len) / stride) + 1

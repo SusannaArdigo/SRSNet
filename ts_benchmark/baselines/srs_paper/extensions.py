@@ -1,36 +1,30 @@
-"""Selectivity-controls extensions for SRSNet reproduction.
+"""Our constructive extensions to SRSNet + their factorial combos.
 
-This module replaces the earlier "broad extension set" (DDA / MSP / GAF /
-RandomSRS) with a focused selectivity-controls study, per the plan in
-``scripts/repro/selectivity_extension_plan.md``.
+Five families, all mapped to a specific paper Future-Work (FW) or
+Limitation (L) item from Sec. 6 of the SRSNet paper:
 
-Rationale (summary -- read the plan for the full discussion):
+  - Random controls (negative-control study)
+        SRSRandomSP, SRSRandomSPNoShuffle, SRSRandomSPRandomShuffle
+        WHY: sanity check that the LEARNED scorer matters at all.
+  - TASP (Time-Aware Selective Patching)               -> FW#1 + L3
+        WHY: replace the opaque scorer MLP with engineered per-window
+        features (FFT, autocorr, variance, slope). Tests if a smaller,
+        interpretable scorer matches or beats the learned one.
+  - Hypernet-AF                                        -> FW#3 + L4
+        WHY: replace the static [n, d] alpha with a per-instance value
+        from a tiny hypernet over a batch-level context vector. Tests
+        whether data-dependent fusion helps.
+  - Factorial combos: (Select variant) x HypernetAF
+        WHY: fill the missing cells of the (Select, Fusion) 3x2 table.
+  - 3-axis combos: (Select variant) x identity Shuffle x HypernetAF
+        WHY: isolate whether the learned _shuffle is doing anything
+        that the 2-axis combos overlooked.
+  - Backbone extension: SRSNet + TransformerEncoder + FlattenHead
+        WHY: tests the paper's claim (Sec. 4) that a linear head is
+        enough by inserting a real Transformer Encoder.
 
-    * The earlier extensions were either capacity-confounded (GAF, MSP),
-      effectively no-ops in the sigmoid-saturated regime (DDA), or imprecisely
-      named and entangled with both selection and shuffling (RandomSRS).
-    * The selectivity-controls study tests one sharp question instead:
-        How much does SRSNet's performance depend on the **learned** patch
-        selector, compared with random patch choices?
-    * Two retrained controls are added.  Both share the SRSNet architecture
-      except for the SRS ``_select`` (and, in the third variant, the SRS
-      ``_shuffle``):
-
-        * ``SRSRandomSP``                  -- random ``_select`` only,
-                                              learned ``_shuffle`` kept.
-        * ``SRSRandomSPNoShuffle``         -- random ``_select`` + identity
-                                              shuffle (deterministic).  This
-                                              is the **default** second
-                                              variant per review note #3 of
-                                              the plan.
-        * ``SRSRandomSPRandomShuffle``     -- random ``_select`` + random
-                                              ``_shuffle``.  Optional, kept
-                                              for ablating both stages at
-                                              once.
-
-For naming hygiene (review note #6) the old ``SRSNet_RandomSRS`` wrapper is
-**aliased** to ``SRSNet_RandomSP`` so old call-sites do not silently break,
-but new code should use the precise name.
+Backwards-compat: ``SRSNet_RandomSRS`` is aliased to ``SRSNet_RandomSP``
+so old manifests still resolve. New code should use the precise name.
 """
 from __future__ import annotations
 
@@ -47,68 +41,45 @@ from ts_benchmark.baselines.srsnet.srsnet import MODEL_HYPER_PARAMS, SRSNet
 # Random selective-patching layers
 # ---------------------------------------------------------------------------
 class SRSRandomSP(SRS):
-    """SRS variant that selects candidate windows uniformly at random.
+    """Random ``_select``: uniformly random index for each output slot.
 
-    Everything else (``_shuffle``, adaptive fusion, embeddings, dropout,
-    positional handling) is inherited unchanged from the parent ``SRS``.
-    The only intervention is in ``_select``: instead of scoring each
-    candidate window through the learned ``scorer_select`` MLP, we draw
-    a uniform random index for each output slot.
-
-    Two consequences worth noting:
-
-    * The learned ``scorer_select`` parameters still exist (so the
-      state-dict shape matches a vanilla SRSNet), but they receive zero
-      gradient through the forward pass.  This is intentional -- the goal
-      is a tight ``selectivity claim'' control, not a parameter-count
-      ablation.
-    * The original ``_select`` multiplies each selected patch by a unit-
-      scaled ``max_scores`` factor.  Random selection has no scores, so we
-      drop that multiplication.  This matches the sketch in the plan.
+    WHY: negative-control. Tests if the learned scorer matters at all.
+    The shuffle is kept learned so the only thing changing is selection.
+    Scorer params still exist (shape compat) but get no gradient.
     """
 
     def _select(self, x_rec):
-        # x_rec shape: [batch, n_vars, candidate_num, patch_size]
+        # x_rec: [B, N, K, p] -- random index per output slot, no scores
         batch, n_vars, candidate_num, patch_size = x_rec.shape
-        idx = torch.randint(
-            low=0,
-            high=candidate_num,
-            size=(batch, n_vars, 1, self.patch_num),
-            device=x_rec.device,
-        )
-        # Broadcast indices over the patch_size dim so torch.gather can
-        # collect the entire patch window for each chosen candidate.
-        gather_idx = idx.repeat(1, 1, patch_size, 1).permute(0, 1, 3, 2)
-        return torch.gather(x_rec, dim=-2, index=gather_idx)
+        idx = torch.randint(low=0, high=candidate_num,
+                            size=(batch, n_vars, 1, self.patch_num),
+                            device=x_rec.device)
+        gather_idx = idx.repeat(1, 1, patch_size, 1).permute(0, 1, 3, 2)   # broadcast on patch_len
+        return torch.gather(x_rec, dim=-2, index=gather_idx)               # [B, N, n, p]
 
 
 class SRSRandomSPNoShuffle(SRSRandomSP):
-    """Random ``_select`` + identity ``_shuffle`` (deterministic shuffle).
+    """Random ``_select`` + identity ``_shuffle``.
 
-    Per review note #3 of the plan, identity shuffle is the recommended
-    default for the second variant because it introduces no extra source
-    of stochasticity and isolates "no learning in ``_shuffle``" cleanly.
+    WHY: cleanest "no learning anywhere in SRS" control. No randomness
+    in the shuffle stage, so all variance comes from _select.
     """
 
     def _shuffle(self, selected_patches):
-        return selected_patches
+        return selected_patches                                            # identity -- no reorder
 
 
 class SRSRandomSPRandomShuffle(SRSRandomSP):
-    """Random ``_select`` + random ``_shuffle`` (full stochastic baseline).
+    """Random ``_select`` + random ``_shuffle``.
 
-    Kept as an optional third variant for users who want to ablate both
-    selection and shuffling at the same time.  Has higher per-seed
-    variance than ``SRSRandomSPNoShuffle`` because both stages are now
-    sampled fresh each forward pass.
+    WHY: full-chaos baseline. Higher per-seed variance than NoShuffle
+    because both stages re-sample every forward.
     """
 
     def _shuffle(self, selected_patches):
         batch, n_vars, patch_num, patch_size = selected_patches.shape
-        scores = torch.rand(
-            batch, n_vars, patch_num, 1, device=selected_patches.device
-        )
-        order = torch.argsort(scores, dim=-2, descending=True)
+        scores = torch.rand(batch, n_vars, patch_num, 1, device=selected_patches.device)
+        order = torch.argsort(scores, dim=-2, descending=True)             # random permutation
         gather_idx = order.repeat(1, 1, 1, patch_size)
         return torch.gather(selected_patches, dim=-2, index=gather_idx)
 
@@ -117,24 +88,21 @@ class SRSRandomSPRandomShuffle(SRSRandomSP):
 # Constructive extensions: TASP, Hypernet-AF
 # ---------------------------------------------------------------------------
 class SRSTimeAware(SRS):
-    """TASP: scorer over engineered interpretable features.
+    """TASP: scorer over 4 engineered per-window features (FW#1 + L3).
 
-    Addresses paper FW#1 (environment-aware mechanism) + L3 (interpretability).
-    Replaces the [patch_len -> hidden -> patch_num] MLP scorer with a
-    [4 -> 16 -> patch_num] MLP whose inputs are 4 per-window summary
-    statistics: dominant FFT magnitude, lag-1 autocorrelation, variance,
-    and trend slope.  Total scorer parameters drop sharply, so any
-    improvement cannot be attributed to extra capacity.
+    WHY: tests whether a tiny, *interpretable* scorer matches or beats
+    the opaque learned-over-raw-values scorer of vanilla SRS. Inputs are
+    dominant FFT magnitude, lag-1 autocorrelation, variance, trend slope.
+    Scorer params drop from ~6k to ~370, so any gain is NOT from capacity.
+    Shuffle scorer is untouched -- changes are attributable to _select only.
     """
 
     N_FEATURES = 4
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Replace the learned scorer over raw patch values with a tiny
-        # MLP over engineered per-window features.  The shuffle scorer
-        # is left alone so any change in MSE is attributable to the
-        # selection scorer alone.
+        # Swap the [patch_len -> hidden -> patch_num] MLP for a
+        # [4 -> 16 -> patch_num] MLP over engineered features.
         hidden = max(self.N_FEATURES * 4, 16)
         self.scorer_select = nn.Sequential(
             nn.Linear(self.N_FEATURES, hidden),
@@ -144,53 +112,49 @@ class SRSTimeAware(SRS):
 
     @staticmethod
     def _window_features(x_rec):
-        """x_rec: [B, C, candidate_num, patch_size] -> [B, C, candidate_num, 4]."""
-        # Dominant non-DC FFT magnitude per window.
+        """Compute (FFT max, lag-1 autocorr, var, trend slope) per window.
+
+        x_rec: [B, C, candidate_num, patch_size] -> [B, C, candidate_num, 4]
+        """
+        # 1) Dominant non-DC FFT magnitude (seasonality strength)
         spec = torch.fft.rfft(x_rec, dim=-1).abs()
-        if spec.shape[-1] > 1:
-            dominant = spec[..., 1:].max(dim=-1).values
-        else:
-            dominant = spec[..., 0]
-        # Demean for autocorrelation and trend-slope computation.
+        dominant = spec[..., 1:].max(dim=-1).values if spec.shape[-1] > 1 else spec[..., 0]
+        # 2) variance + 3) lag-1 autocorrelation (smoothness)
         mean = x_rec.mean(dim=-1, keepdim=True)
         var = x_rec.var(dim=-1, unbiased=False)
         x_c = x_rec - mean
-        # Lag-1 autocorrelation, biased toward zero for very short windows.
         denom = x_c.pow(2).sum(dim=-1) + 1e-8
         ac1 = (x_c[..., 1:] * x_c[..., :-1]).sum(dim=-1) / denom
-        # Trend slope: least-squares fit residual.
+        # 4) Trend slope via least-squares (linear-fit gradient)
         t = torch.arange(x_rec.shape[-1], device=x_rec.device, dtype=x_rec.dtype)
         t_c = t - t.mean()
         slope_denom = (t_c * t_c).sum() + 1e-8
         slope = ((x_rec - mean) * t_c).sum(dim=-1) / slope_denom
-        feats = torch.stack([dominant, ac1, var, slope], dim=-1)
-        return feats
+        return torch.stack([dominant, ac1, var, slope], dim=-1)
 
     def _select(self, x_rec):
-        # x_rec: [B, C, candidate_num, patch_size]
-        feats = self._window_features(x_rec)
-        scores = self.scorer_select(feats)  # [B, C, candidate_num, patch_num]
-        indices = torch.argmax(scores, dim=-2, keepdim=True)
+        """Same straight-through select as vanilla SRS, but scorer eats features not values."""
+        feats = self._window_features(x_rec)                                    # [B, C, K, 4]
+        scores = self.scorer_select(feats)                                      # [B, C, K, n]
+        indices = torch.argmax(scores, dim=-2, keepdim=True)                    # I^s (eq. 2)
         max_scores = torch.gather(input=scores, dim=-2, index=indices)
         non_zero_mask = max_scores != 0
-        inv = (1 / max_scores[non_zero_mask]).detach()
+        inv = (1 / max_scores[non_zero_mask]).detach()                          # detached reciprocal
         x_rec_indices = indices.repeat(1, 1, self.patch_len, 1).permute(0, 1, 3, 2)
         selected_patches = torch.gather(input=x_rec, index=x_rec_indices, dim=-2)
-        max_scores[non_zero_mask] *= inv
+        max_scores[non_zero_mask] *= inv                                        # STE: value=1, grad alive
         selected_patches = max_scores.permute(0, 1, 3, 2) * selected_patches
         return selected_patches
 
 
 class SRSHypernetAF(SRS):
-    """Hypernet-AF: data-dependent alpha via a tiny hypernet.
+    """Hypernet-AF: data-dependent alpha via a tiny hypernet (FW#3 + L4).
 
-    Addresses paper FW#3 (efficient alpha update mechanism) + L4
-    (initialization).  Replaces the free [patch_num, d_model] alpha
-    parameter with a small hypernet that consumes a batch-level context
-    vector and outputs the per-cell alpha.  Zero-init of the hypernet
-    weights plus a constant bias of 3.5 makes step 0 behave identically
-    to the paper's default (sigmoid(3.5) ~ 0.97), so any deviation must
-    come from learned context-dependence rather than capacity at init.
+    WHY: replace the static [n, d] alpha with one computed per-instance.
+    A tiny hypernet eats a batch-level context vector (mean-pooled embedding)
+    and outputs the alpha. Init: zero weights + bias=3.5 so sigmoid(alpha)
+    starts at ~0.97 (same as vanilla SRSNet at step 0) -- any gain comes
+    from learned context-dependence, not from capacity at init.
     """
 
     HYPER_HIDDEN = 8
@@ -200,16 +164,14 @@ class SRSHypernetAF(SRS):
                  hidden_size, alpha=2.0, pos=True):
         super().__init__(d_model, patch_len, stride, seq_len, dropout,
                          hidden_size, alpha, pos)
-        # Remove the free alpha parameter; the hypernet replaces it.
-        # We still keep the buffer name for state-dict shape compatibility
-        # with vanilla SRSNet, but it will not be used in forward().
+        # Replace the free alpha with the hypernet pattern. Keep a buffer
+        # under a placeholder name so state-dict shape stays compatible.
         if hasattr(self, "alpha"):
             self.register_buffer("_unused_alpha", torch.zeros_like(self.alpha.data))
             del self.alpha
-        self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)
-        self.hyper = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)
-        # Vanilla-preserving init: zero weights + bias = INIT_ALPHA on the
-        # output so sigmoid(alpha_t=0) ~ 0.97, matching the paper baseline.
+        self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)              # context -> hidden
+        self.hyper = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)    # hidden -> alpha (flat)
+        # Vanilla-preserving init: zero weights + bias=INIT_ALPHA so step 0 matches the paper.
         nn.init.zeros_(self.context_proj.weight)
         nn.init.zeros_(self.context_proj.bias)
         nn.init.zeros_(self.hyper.weight)
@@ -218,17 +180,16 @@ class SRSHypernetAF(SRS):
     def forward(self, x):
         n_vars = x.shape[1]
         x = self.padding_patch_layer(x)
-        rec_repr_space = self._rec_view(x)
-        original_repr_space = self._origin_view(x)
-        e_orig = self.value_embedding_org(original_repr_space)
-        e_rec = self.value_embedding_rec(rec_repr_space)
-        # Context: mean across batch*nvars and across patches of e_orig.
-        # Shape after the SRS forward of the parent: [bs*nvars, patch_num, d_model].
-        ctx = e_orig.mean(dim=0).mean(dim=0)  # [d_model]
-        h = torch.relu(self.context_proj(ctx))
-        alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])
-        weight = torch.sigmoid(alpha_dyn)
-        embedding = weight * e_orig + (1.0 - weight) * e_rec
+        rec_repr_space = self._rec_view(x)                                     # P~
+        original_repr_space = self._origin_view(x)                             # P
+        e_orig = self.value_embedding_org(original_repr_space)                 # E^c (eq. 12)
+        e_rec = self.value_embedding_rec(rec_repr_space)                       # E^s (eq. 12)
+        # Context: mean across batch+channels and patches of E^c -> [d_model]
+        ctx = e_orig.mean(dim=0).mean(dim=0)
+        h = torch.relu(self.context_proj(ctx))                                 # [HYPER_HIDDEN]
+        alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])       # [n, d_model]
+        weight = torch.sigmoid(alpha_dyn)                                      # alpha in (0,1)
+        embedding = weight * e_orig + (1.0 - weight) * e_rec                   # eq. 13
         if self.pos:
             embedding = embedding + self.position_embedding(original_repr_space)
         return self.dropout(embedding), n_vars
@@ -238,13 +199,10 @@ class SRSHypernetAF(SRS):
 # Factorial combinations: (any _select variant) x (Hypernet alpha fusion)
 # ---------------------------------------------------------------------------
 def _make_hypernet_combo(base_select_cls, combo_name):
-    """Compose a base SRS variant (which defines ``_select``) with Hypernet
-    alpha fusion (which overrides ``forward`` to replace the free alpha
-    parameter with a tiny hypernet over a batch-level context vector).
+    """Factory: compose a base SRS variant's ``_select`` with HypernetAF fusion.
 
-    The factory keeps the ``__init__`` and ``forward`` body in one place so
-    that all (Random/TASP) x HypernetAF combos share identical fusion
-    code.  Only the inherited ``_select`` differs.
+    WHY: every (Random/TASP) x HypernetAF combo shares identical fusion code;
+    we keep it in one place. Only the inherited ``_select`` differs.
     """
 
     class _Combo(base_select_cls):
@@ -255,21 +213,14 @@ def _make_hypernet_combo(base_select_cls, combo_name):
 
         def __init__(self, d_model, patch_len, stride, seq_len, dropout,
                      hidden_size, alpha=2.0, pos=True, **extra_kwargs):
-            super().__init__(
-                d_model, patch_len, stride, seq_len, dropout,
-                hidden_size, alpha, pos, **extra_kwargs,
-            )
-            # Replace the free alpha parameter with the same zero-init
-            # hypernet pattern used by SRSHypernetAF (vanilla-preserving).
+            super().__init__(d_model, patch_len, stride, seq_len, dropout,
+                             hidden_size, alpha, pos, **extra_kwargs)
+            # Same zero-init hypernet pattern as SRSHypernetAF.
             if hasattr(self, "alpha"):
-                self.register_buffer(
-                    "_unused_alpha", torch.zeros_like(self.alpha.data)
-                )
+                self.register_buffer("_unused_alpha", torch.zeros_like(self.alpha.data))
                 del self.alpha
             self.context_proj = nn.Linear(d_model, self.HYPER_HIDDEN)
-            self.hyper = nn.Linear(
-                self.HYPER_HIDDEN, self.patch_num * d_model
-            )
+            self.hyper = nn.Linear(self.HYPER_HIDDEN, self.patch_num * d_model)
             nn.init.zeros_(self.context_proj.weight)
             nn.init.zeros_(self.context_proj.bias)
             nn.init.zeros_(self.hyper.weight)
@@ -278,22 +229,19 @@ def _make_hypernet_combo(base_select_cls, combo_name):
         def forward(self, x):
             n_vars = x.shape[1]
             x = self.padding_patch_layer(x)
-            # _rec_view calls _select internally; the inherited _select
-            # (random / engineered / supervised) is what makes each combo
-            # different.
+            # _rec_view calls the inherited _select (random / engineered),
+            # which is what makes each combo different.
             rec_repr_space = self._rec_view(x)
             original_repr_space = self._origin_view(x)
             e_orig = self.value_embedding_org(original_repr_space)
             e_rec = self.value_embedding_rec(rec_repr_space)
-            ctx = e_orig.mean(dim=0).mean(dim=0)
+            ctx = e_orig.mean(dim=0).mean(dim=0)                             # context vector [d_model]
             h = torch.relu(self.context_proj(ctx))
             alpha_dyn = self.hyper(h).view(self.patch_num, e_orig.shape[-1])
             weight = torch.sigmoid(alpha_dyn)
-            embedding = weight * e_orig + (1.0 - weight) * e_rec
+            embedding = weight * e_orig + (1.0 - weight) * e_rec             # data-dependent fusion
             if self.pos:
-                embedding = embedding + self.position_embedding(
-                    original_repr_space
-                )
+                embedding = embedding + self.position_embedding(original_repr_space)
             return self.dropout(embedding), n_vars
 
     _Combo.__name__ = combo_name
@@ -313,27 +261,18 @@ SRSRandomSP_HypernetAF = _make_hypernet_combo(
 # Three-extension combos: <base _select> + identity _shuffle + Hypernet-AF
 # ---------------------------------------------------------------------------
 def _make_3way_combo(two_way_combo_cls, combo_name):
-    """Add an identity ``_shuffle`` on top of an existing 2-way combo.
+    """Factory: take an existing 2-axis combo and add identity ``_shuffle``.
 
-    Each input ``two_way_combo_cls`` already pairs a custom ``_select``
-    with Hypernet-AF fusion.  This factory subclasses it once more to
-    drop the learned shuffle as well, producing a 3-axis change versus
-    vanilla SRS:
-
-        Select != Learned   AND   Shuffle == Identity   AND
-        Fusion == Hypernet alpha
-
-    Used to ask: "is the learned shuffle doing anything that the
-    factorial combos overlooked?"  Identity shuffle was chosen rather
-    than random shuffle because review note #3 of the original
-    selectivity plan picks it as the cleanest default control.
+    WHY: 3-axis change vs vanilla SRS  --  Select != Learned, Shuffle == Identity,
+    Fusion == Hypernet alpha. Used to ask: "is the learned shuffle doing anything
+    the 2-axis combos overlooked?"
     """
 
     class _ThreeWayCombo(two_way_combo_cls):
-        """``two_way_combo_cls`` semantics + identity shuffle."""
+        """``two_way_combo_cls`` + identity shuffle (drops the learned reorder)."""
 
         def _shuffle(self, selected_patches):
-            return selected_patches
+            return selected_patches                                          # identity
 
     _ThreeWayCombo.__name__ = combo_name
     _ThreeWayCombo.__qualname__ = combo_name
@@ -352,27 +291,21 @@ SRSRandomSP_NoShuffle_HypernetAF = _make_3way_combo(
 # SRSNetModel subclasses (swap the patch_embedding for the random variant)
 # ---------------------------------------------------------------------------
 class _SelectivityControlsSRSNetModel(SRSNetModel):
-    """SRSNetModel that swaps the patch_embedding for a control layer."""
+    """SRSNetModel base that swaps the patch_embedding for one of our SRS variants."""
 
-    embedding_cls = None  # override in subclass
+    embedding_cls = None  # override in subclass with an SRS variant
 
     def __init__(self, config):
-        super().__init__(config)
+        super().__init__(config)                                             # builds revin, default SRS, head
         if self.embedding_cls is None:
-            raise NotImplementedError(
-                "Subclass must set embedding_cls to an SRS variant."
-            )
+            raise NotImplementedError("Subclass must set embedding_cls to an SRS variant.")
+        # Same constructor signature as the parent SRS class so we can hot-swap.
         kwargs = dict(
-            d_model=config.d_model,
-            patch_len=self.patch_len,
-            stride=self.stride,
-            seq_len=self.seq_len,
-            dropout=config.dropout,
-            hidden_size=config.hidden_size,
-            alpha=config.alpha,
-            pos=config.pos,
+            d_model=config.d_model, patch_len=self.patch_len, stride=self.stride,
+            seq_len=self.seq_len, dropout=config.dropout, hidden_size=config.hidden_size,
+            alpha=config.alpha, pos=config.pos,
         )
-        self.patch_embedding = self.embedding_cls(**kwargs)
+        self.patch_embedding = self.embedding_cls(**kwargs)                  # replace SRS with our variant
 
 
 class SRSNet_RandomSP_Model(_SelectivityControlsSRSNetModel):
@@ -417,16 +350,18 @@ class SRSNet_RandomSP_NoShuffle_HypernetAF_Model(_SelectivityControlsSRSNetModel
 # DeepForecastingModelBase wrappers (registered in __init__.py)
 # ---------------------------------------------------------------------------
 class _SelectivityControlsSRSNet(SRSNet):
-    """SRSNet variant that reports a distinct model_name + model class."""
+    """SRSNet TFB wrapper that reports a distinct model_name + model_cls per variant."""
 
-    variant_name = None
-    model_cls = None
+    variant_name = None  # override: string used in result CSVs
+    model_cls = None     # override: the _SelectivityControlsSRSNetModel subclass
 
     @property
     def model_name(self):
+        """String TFB uses to label this variant in result CSVs."""
         return self.variant_name
 
     def _init_model(self):
+        """Instantiate the underlying nn.Module from the merged config."""
         return self.model_cls(self.config)
 
 
